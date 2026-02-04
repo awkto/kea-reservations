@@ -62,6 +62,9 @@
                     <span class="connection-status offline"></span>
                     <span id="status-text">Checking connection...</span>
                 </span>
+                <button class="btn btn-outline-light btn-sm me-2" onclick="showKeaConfigModal()">
+                    <i class="bi bi-file-code"></i> Kea Config
+                </button>
                 <button class="btn btn-outline-light btn-sm" onclick="showConfigModal()">
                     <i class="bi bi-gear"></i> Edit Configuration
                 </button>
@@ -568,6 +571,85 @@
         </div>
     </div>
 
+    <!-- Kea Config Modal -->
+    <div class="modal fade" id="keaConfigModal" tabindex="-1">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header bg-dark text-white">
+                    <h5 class="modal-title">
+                        <i class="bi bi-file-code"></i> Kea DHCP Configuration
+                    </h5>
+                    <div class="btn-group ms-auto me-3" role="group">
+                        <input type="radio" class="btn-check" name="keaConfigView" id="viewCurated" autocomplete="off" checked>
+                        <label class="btn btn-outline-light btn-sm" for="viewCurated">Curated</label>
+                        <input type="radio" class="btn-check" name="keaConfigView" id="viewRaw" autocomplete="off">
+                        <label class="btn btn-outline-light btn-sm" for="viewRaw">Raw JSON</label>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- Loading spinner -->
+                    <div id="kea-config-loading" class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2">Loading Kea configuration...</p>
+                    </div>
+
+                    <!-- Error message -->
+                    <div id="kea-config-error" class="alert alert-danger" style="display: none;">
+                        <h5><i class="bi bi-exclamation-triangle"></i> Error Loading Configuration</h5>
+                        <p id="kea-config-error-text"></p>
+                    </div>
+
+                    <!-- Curated view -->
+                    <div id="kea-config-curated" style="display: none;">
+                        <div class="accordion" id="keaConfigAccordion">
+                            <!-- Global Settings -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapseGlobal" aria-expanded="true" aria-controls="collapseGlobal">
+                                        <i class="bi bi-globe me-2"></i> Global Settings
+                                    </button>
+                                </h2>
+                                <div id="collapseGlobal" class="accordion-collapse collapse show" data-bs-parent="#keaConfigAccordion">
+                                    <div class="accordion-body" id="global-settings-content">
+                                        <!-- Global settings will be populated here -->
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Subnets container - will be populated dynamically -->
+                            <div id="subnets-accordion-container"></div>
+
+                            <!-- Advanced Settings -->
+                            <div class="accordion-item">
+                                <h2 class="accordion-header">
+                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseAdvanced" aria-expanded="false" aria-controls="collapseAdvanced">
+                                        <i class="bi bi-gear-wide-connected me-2"></i> Advanced Settings
+                                    </button>
+                                </h2>
+                                <div id="collapseAdvanced" class="accordion-collapse collapse" data-bs-parent="#keaConfigAccordion">
+                                    <div class="accordion-body" id="advanced-settings-content">
+                                        <!-- Advanced settings will be populated here -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Raw JSON view -->
+                    <div id="kea-config-raw" style="display: none;">
+                        <pre id="kea-config-json" class="bg-dark text-light p-3 rounded" style="max-height: 70vh; overflow-y: auto; font-size: 0.85rem;"><code></code></pre>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let allLeases = [];
@@ -582,6 +664,8 @@
         let deleteReservationModal = null;
         let configModal = null;
         let importModal = null;
+        let keaConfigModal = null;
+        let keaConfigData = null;
 
         // Initialize modals
         document.addEventListener('DOMContentLoaded', function() {
@@ -592,6 +676,21 @@
             deleteReservationModal = new bootstrap.Modal(document.getElementById('deleteReservationModal'));
             configModal = new bootstrap.Modal(document.getElementById('configModal'));
             importModal = new bootstrap.Modal(document.getElementById('importModal'));
+            keaConfigModal = new bootstrap.Modal(document.getElementById('keaConfigModal'));
+
+            // Setup Kea Config view toggle
+            document.getElementById('viewCurated').addEventListener('change', function() {
+                if (this.checked) {
+                    document.getElementById('kea-config-curated').style.display = 'block';
+                    document.getElementById('kea-config-raw').style.display = 'none';
+                }
+            });
+            document.getElementById('viewRaw').addEventListener('change', function() {
+                if (this.checked) {
+                    document.getElementById('kea-config-curated').style.display = 'none';
+                    document.getElementById('kea-config-raw').style.display = 'block';
+                }
+            });
             
             // Setup version toggle
             document.getElementById('versionToggle').addEventListener('click', toggleVersion);
@@ -1669,6 +1768,220 @@
                     </div>
                 `;
             }
+        }
+
+        // Kea Config Modal Functions
+        async function showKeaConfigModal() {
+            keaConfigModal.show();
+
+            // Reset view state
+            document.getElementById('kea-config-loading').style.display = 'block';
+            document.getElementById('kea-config-error').style.display = 'none';
+            document.getElementById('kea-config-curated').style.display = 'none';
+            document.getElementById('kea-config-raw').style.display = 'none';
+
+            // Reset toggle to curated view
+            document.getElementById('viewCurated').checked = true;
+
+            try {
+                const response = await fetch('/api/kea-config');
+                const data = await response.json();
+
+                if (data.success) {
+                    keaConfigData = data;
+
+                    // Render both views
+                    renderCuratedView(data.curated);
+                    renderRawView(data.config);
+
+                    // Show curated view by default
+                    document.getElementById('kea-config-loading').style.display = 'none';
+                    document.getElementById('kea-config-curated').style.display = 'block';
+                } else {
+                    throw new Error(data.error || 'Failed to load Kea configuration');
+                }
+            } catch (error) {
+                console.error('Failed to load Kea config:', error);
+                document.getElementById('kea-config-loading').style.display = 'none';
+                document.getElementById('kea-config-error-text').textContent = error.message;
+                document.getElementById('kea-config-error').style.display = 'block';
+            }
+        }
+
+        function renderCuratedView(curated) {
+            // Render Global Settings
+            const globalContent = document.getElementById('global-settings-content');
+            let globalHtml = '<dl class="row mb-0">';
+
+            // Default Lease Time
+            if (curated.global.valid_lifetime !== null && curated.global.valid_lifetime !== undefined) {
+                globalHtml += `
+                    <dt class="col-sm-4">Default Lease Time</dt>
+                    <dd class="col-sm-8">${curated.global.valid_lifetime}s <span class="text-muted">(${curated.global.valid_lifetime_formatted})</span></dd>
+                `;
+            }
+
+            // Renew Timer (T1)
+            if (curated.global.renew_timer !== null && curated.global.renew_timer !== undefined) {
+                globalHtml += `
+                    <dt class="col-sm-4">Renew Timer (T1)</dt>
+                    <dd class="col-sm-8">${curated.global.renew_timer}s <span class="text-muted">(${curated.global.renew_timer_formatted})</span></dd>
+                `;
+            }
+
+            // Rebind Timer (T2)
+            if (curated.global.rebind_timer !== null && curated.global.rebind_timer !== undefined) {
+                globalHtml += `
+                    <dt class="col-sm-4">Rebind Timer (T2)</dt>
+                    <dd class="col-sm-8">${curated.global.rebind_timer}s <span class="text-muted">(${curated.global.rebind_timer_formatted})</span></dd>
+                `;
+            }
+
+            // Interfaces
+            if (curated.global.interfaces && curated.global.interfaces.length > 0) {
+                globalHtml += `
+                    <dt class="col-sm-4">Interfaces</dt>
+                    <dd class="col-sm-8"><code>${curated.global.interfaces.join(', ')}</code></dd>
+                `;
+            }
+
+            // Lease Database
+            if (curated.global.lease_database && Object.keys(curated.global.lease_database).length > 0) {
+                const db = curated.global.lease_database;
+                let dbInfo = db.type || 'unknown';
+                if (db.persist !== undefined) {
+                    dbInfo += db.persist ? ' (persistent)' : ' (non-persistent)';
+                }
+                globalHtml += `
+                    <dt class="col-sm-4">Lease Database</dt>
+                    <dd class="col-sm-8">${dbInfo}</dd>
+                `;
+            }
+
+            globalHtml += '</dl>';
+            globalContent.innerHTML = globalHtml;
+
+            // Render Subnets
+            const subnetsContainer = document.getElementById('subnets-accordion-container');
+            subnetsContainer.innerHTML = '';
+
+            curated.subnets.forEach((subnet, index) => {
+                const subnetId = `collapseSubnet${subnet.id}`;
+                const isFirst = index === 0;
+
+                let subnetHtml = `
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button ${isFirst ? '' : 'collapsed'}" type="button" data-bs-toggle="collapse" data-bs-target="#${subnetId}" aria-expanded="${isFirst}" aria-controls="${subnetId}">
+                                <i class="bi bi-diagram-2 me-2"></i> Subnet ${subnet.id}: ${subnet.subnet}
+                                <span class="badge bg-secondary ms-2">${subnet.reservation_count} reservations</span>
+                            </button>
+                        </h2>
+                        <div id="${subnetId}" class="accordion-collapse collapse ${isFirst ? 'show' : ''}" data-bs-parent="#keaConfigAccordion">
+                            <div class="accordion-body">
+                                <dl class="row mb-0">
+                `;
+
+                // Pools
+                if (subnet.pools && subnet.pools.length > 0) {
+                    subnetHtml += `
+                        <dt class="col-sm-4">Pools</dt>
+                        <dd class="col-sm-8"><code>${subnet.pools.join('<br>')}</code></dd>
+                    `;
+                }
+
+                // Lease Time (if different from global)
+                if (subnet.valid_lifetime !== null && subnet.valid_lifetime !== undefined) {
+                    subnetHtml += `
+                        <dt class="col-sm-4">Lease Time</dt>
+                        <dd class="col-sm-8">${subnet.valid_lifetime}s <span class="text-muted">(${subnet.valid_lifetime_formatted})</span></dd>
+                    `;
+                } else {
+                    subnetHtml += `
+                        <dt class="col-sm-4">Lease Time</dt>
+                        <dd class="col-sm-8"><span class="text-muted">(using global default)</span></dd>
+                    `;
+                }
+
+                // Router
+                if (subnet.options.routers) {
+                    subnetHtml += `
+                        <dt class="col-sm-4">Router</dt>
+                        <dd class="col-sm-8"><code>${subnet.options.routers}</code></dd>
+                    `;
+                }
+
+                // DNS Servers
+                if (subnet.options.dns_servers) {
+                    subnetHtml += `
+                        <dt class="col-sm-4">DNS Servers</dt>
+                        <dd class="col-sm-8"><code>${subnet.options.dns_servers}</code></dd>
+                    `;
+                }
+
+                // Reservation count
+                subnetHtml += `
+                    <dt class="col-sm-4">Reservations</dt>
+                    <dd class="col-sm-8">${subnet.reservation_count}</dd>
+                `;
+
+                subnetHtml += `
+                                </dl>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                subnetsContainer.innerHTML += subnetHtml;
+            });
+
+            // Render Advanced Settings
+            const advancedContent = document.getElementById('advanced-settings-content');
+            let advancedHtml = '<dl class="row mb-0">';
+
+            // Hooks Libraries
+            if (curated.advanced.hooks_libraries && curated.advanced.hooks_libraries.length > 0) {
+                advancedHtml += `
+                    <dt class="col-sm-4">Hooks Libraries</dt>
+                    <dd class="col-sm-8">
+                        <ul class="list-unstyled mb-0">
+                            ${curated.advanced.hooks_libraries.map(h => `<li><code>${h}</code></li>`).join('')}
+                        </ul>
+                    </dd>
+                `;
+            } else {
+                advancedHtml += `
+                    <dt class="col-sm-4">Hooks Libraries</dt>
+                    <dd class="col-sm-8"><span class="text-muted">None configured</span></dd>
+                `;
+            }
+
+            // Control Socket
+            if (curated.advanced.control_socket && curated.advanced.control_socket.type) {
+                advancedHtml += `
+                    <dt class="col-sm-4">Control Socket</dt>
+                    <dd class="col-sm-8">
+                        Type: <code>${curated.advanced.control_socket.type}</code><br>
+                        Path: <code>${curated.advanced.control_socket.path}</code>
+                    </dd>
+                `;
+            }
+
+            // Host Reservation Identifiers
+            if (curated.advanced.host_reservation_identifiers && curated.advanced.host_reservation_identifiers.length > 0) {
+                advancedHtml += `
+                    <dt class="col-sm-4">Reservation Identifiers</dt>
+                    <dd class="col-sm-8"><code>${curated.advanced.host_reservation_identifiers.join(', ')}</code></dd>
+                `;
+            }
+
+            advancedHtml += '</dl>';
+            advancedContent.innerHTML = advancedHtml;
+        }
+
+        function renderRawView(config) {
+            const jsonContainer = document.getElementById('kea-config-json').querySelector('code');
+            jsonContainer.textContent = JSON.stringify(config, null, 2);
         }
 
         // Auto-refresh every 30 seconds

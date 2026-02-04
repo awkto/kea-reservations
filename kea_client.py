@@ -543,16 +543,27 @@ class KeaClient:
         self._send_command("config-set", ["dhcp4"], set_arguments)
         logger.info(f"Deleted reservation via config-set: IP={ip_address}")
     
+    def get_config(self) -> Dict:
+        """
+        Get full KEA DHCPv4 configuration
+
+        Returns:
+            Full configuration dictionary
+        """
+        result = self._send_command("config-get", ["dhcp4"])
+        config = result.get('arguments', {})
+        return config
+
     def get_subnets(self) -> List[Dict]:
         """
         Get configured DHCPv4 subnets
-        
+
         Returns:
             List of subnet dictionaries
         """
         result = self._send_command("config-get", ["dhcp4"])
         config = result.get('arguments', {})
-        
+
         dhcp4_config = config.get('Dhcp4', {})
         subnets = dhcp4_config.get('subnet4', [])
         

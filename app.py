@@ -1091,6 +1091,155 @@ def get_config():
         }), 500
 
 
+@app.route('/api/kea-config', methods=['GET'])
+def get_kea_config():
+    """Get KEA DHCP server configuration
+    ---
+    tags:
+      - Configuration
+    summary: Get KEA DHCP server configuration
+    description: |
+      Retrieves the full KEA DHCP4 configuration from the server.
+      Returns both the raw configuration and a curated view with formatted settings.
+    responses:
+      200:
+        description: KEA configuration retrieved successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+              description: Whether the operation succeeded
+            config:
+              type: object
+              description: Full Dhcp4 configuration for raw view
+            curated:
+              type: object
+              description: Curated configuration with formatted settings
+              properties:
+                global:
+                  type: object
+                  description: Global DHCP settings
+                subnets:
+                  type: array
+                  description: Subnet configurations
+                advanced:
+                  type: object
+                  description: Advanced settings (hooks, control socket)
+      500:
+        description: Internal server error
+    """
+    # Check if configuration is valid first
+    if not is_config_valid():
+        return jsonify({
+            'success': False,
+            'error': 'KEA server not configured. Please update configuration.'
+        }), 200
+
+    try:
+        client = get_kea_client()
+        kea_config = client.get_config()
+
+        # Extract Dhcp4 configuration
+        dhcp4_config = kea_config.get('Dhcp4', {})
+
+        # Build curated view
+        curated = {
+            'global': {},
+            'subnets': [],
+            'advanced': {}
+        }
+
+        # Global settings
+        def format_time(seconds):
+            """Format seconds into human-readable time"""
+            if seconds is None:
+                return None
+            if seconds < 60:
+                return f"{seconds}s"
+            elif seconds < 3600:
+                minutes = seconds // 60
+                return f"{minutes} min" if minutes == 1 else f"{minutes} mins"
+            else:
+                hours = seconds // 3600
+                return f"{hours} hour" if hours == 1 else f"{hours} hours"
+
+        valid_lifetime = dhcp4_config.get('valid-lifetime')
+        renew_timer = dhcp4_config.get('renew-timer')
+        rebind_timer = dhcp4_config.get('rebind-timer')
+
+        curated['global'] = {
+            'valid_lifetime': valid_lifetime,
+            'valid_lifetime_formatted': format_time(valid_lifetime),
+            'renew_timer': renew_timer,
+            'renew_timer_formatted': format_time(renew_timer),
+            'rebind_timer': rebind_timer,
+            'rebind_timer_formatted': format_time(rebind_timer),
+            'interfaces': dhcp4_config.get('interfaces-config', {}).get('interfaces', []),
+            'lease_database': dhcp4_config.get('lease-database', {})
+        }
+
+        # Subnet settings
+        subnets = dhcp4_config.get('subnet4', [])
+        for subnet in subnets:
+            pools = []
+            for pool in subnet.get('pools', []):
+                if isinstance(pool, dict):
+                    pools.append(pool.get('pool', ''))
+                else:
+                    pools.append(str(pool))
+
+            # Extract options
+            options = {}
+            for opt in subnet.get('option-data', []):
+                if opt.get('code') == 3 or opt.get('name') == 'routers':
+                    options['routers'] = opt.get('data', '')
+                elif opt.get('code') == 6 or opt.get('name') == 'domain-name-servers':
+                    options['dns_servers'] = opt.get('data', '')
+
+            subnet_lifetime = subnet.get('valid-lifetime')
+            curated['subnets'].append({
+                'id': subnet.get('id'),
+                'subnet': subnet.get('subnet'),
+                'pools': pools,
+                'valid_lifetime': subnet_lifetime,
+                'valid_lifetime_formatted': format_time(subnet_lifetime) if subnet_lifetime else None,
+                'reservation_count': len(subnet.get('reservations', [])),
+                'options': options
+            })
+
+        # Advanced settings
+        hooks = []
+        for hook in dhcp4_config.get('hooks-libraries', []):
+            library_path = hook.get('library', '')
+            # Extract just the filename
+            library_name = library_path.split('/')[-1] if library_path else ''
+            hooks.append(library_name)
+
+        control_socket = dhcp4_config.get('control-socket', {})
+        curated['advanced'] = {
+            'hooks_libraries': hooks,
+            'control_socket': {
+                'type': control_socket.get('socket-type', ''),
+                'path': control_socket.get('socket-name', '')
+            },
+            'host_reservation_identifiers': dhcp4_config.get('host-reservation-identifiers', [])
+        }
+
+        return jsonify({
+            'success': True,
+            'config': dhcp4_config,
+            'curated': curated
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error fetching KEA config: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/config', methods=['POST'])
 def save_config():
     """Save configuration to file
