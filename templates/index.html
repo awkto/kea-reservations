@@ -602,6 +602,13 @@
                         <p id="kea-config-error-text"></p>
                     </div>
 
+                    <!-- Curation warning -->
+                    <div id="kea-config-curation-warning" class="alert alert-warning" style="display: none;">
+                        <h6><i class="bi bi-exclamation-triangle"></i> Curated View Unavailable</h6>
+                        <p id="kea-config-curation-warning-text"></p>
+                        <p class="mb-0"><strong>Raw JSON view is still available below.</strong></p>
+                    </div>
+
                     <!-- Curated view -->
                     <div id="kea-config-curated" style="display: none;">
                         <div class="accordion" id="keaConfigAccordion">
@@ -1777,11 +1784,14 @@
             // Reset view state
             document.getElementById('kea-config-loading').style.display = 'block';
             document.getElementById('kea-config-error').style.display = 'none';
+            document.getElementById('kea-config-curation-warning').style.display = 'none';
             document.getElementById('kea-config-curated').style.display = 'none';
             document.getElementById('kea-config-raw').style.display = 'none';
 
-            // Reset toggle to curated view
+            // Reset toggle to curated view and enable both buttons
             document.getElementById('viewCurated').checked = true;
+            document.getElementById('viewCurated').disabled = false;
+            document.getElementById('viewRaw').disabled = false;
 
             try {
                 const response = await fetch('/api/kea-config');
@@ -1790,13 +1800,36 @@
                 if (data.success) {
                     keaConfigData = data;
 
-                    // Render both views
-                    renderCuratedView(data.curated);
+                    // Always render raw view (always available)
                     renderRawView(data.config);
 
-                    // Show curated view by default
-                    document.getElementById('kea-config-loading').style.display = 'none';
-                    document.getElementById('kea-config-curated').style.display = 'block';
+                    // Check if curation succeeded
+                    if (data.curated) {
+                        // Curation succeeded - render curated view
+                        renderCuratedView(data.curated);
+
+                        // Show curated view by default
+                        document.getElementById('kea-config-loading').style.display = 'none';
+                        document.getElementById('kea-config-curated').style.display = 'block';
+                    } else if (data.curation_error) {
+                        // Curation failed but we have raw config
+                        console.warn('Curation failed:', data.curation_error);
+
+                        // Show warning banner
+                        document.getElementById('kea-config-curation-warning-text').textContent = data.curation_error;
+                        document.getElementById('kea-config-curation-warning').style.display = 'block';
+
+                        // Disable curated view button and switch to raw view
+                        document.getElementById('viewCurated').disabled = true;
+                        document.getElementById('viewRaw').checked = true;
+
+                        // Show raw view
+                        document.getElementById('kea-config-loading').style.display = 'none';
+                        document.getElementById('kea-config-raw').style.display = 'block';
+                    } else {
+                        // Unexpected: success but no curated data and no error
+                        throw new Error('Configuration received but curation data is missing');
+                    }
                 } else {
                     throw new Error(data.error || 'Failed to load Kea configuration');
                 }
@@ -1809,6 +1842,12 @@
         }
 
         function renderCuratedView(curated) {
+            // Safety check
+            if (!curated) {
+                console.error('renderCuratedView called with null/undefined data');
+                return;
+            }
+
             // Render Global Settings
             const globalContent = document.getElementById('global-settings-content');
             let globalHtml = '<dl class="row mb-0">';

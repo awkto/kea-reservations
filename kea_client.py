@@ -275,21 +275,28 @@ class KeaClient:
     def _get_lease_database_info(self) -> Dict:
         """
         Get information about the lease database configuration
-        
+
         Returns:
-            Dictionary with database type and configuration
+            Dictionary with database type and configuration (defaults to memfile on errors)
         """
-        result = self._send_command("config-get", ["dhcp4"])
-        config = result.get('arguments', {})
-        dhcp4_config = config.get('Dhcp4', {})
-        
-        lease_db = dhcp4_config.get('lease-database', {})
-        db_type = lease_db.get('type', 'memfile')
-        
-        return {
-            'type': db_type,
-            'config': lease_db
-        }
+        try:
+            result = self._send_command("config-get", ["dhcp4"])
+            config = result.get('arguments', {})
+            dhcp4_config = config.get('Dhcp4', {})
+
+            lease_db = dhcp4_config.get('lease-database', {})
+            db_type = lease_db.get('type', 'memfile')
+
+            return {
+                'type': db_type,
+                'config': lease_db
+            }
+        except Exception as e:
+            logger.warning(f"Failed to parse lease database info from KEA config: {e}")
+            return {
+                'type': 'unknown',
+                'config': {}
+            }
     
     def get_reservations(self, subnet_id: Optional[int] = None) -> List[Dict]:
         """
@@ -559,20 +566,24 @@ class KeaClient:
         Get configured DHCPv4 subnets
 
         Returns:
-            List of subnet dictionaries
+            List of subnet dictionaries (empty list on parsing errors)
         """
-        result = self._send_command("config-get", ["dhcp4"])
-        config = result.get('arguments', {})
+        try:
+            result = self._send_command("config-get", ["dhcp4"])
+            config = result.get('arguments', {})
 
-        dhcp4_config = config.get('Dhcp4', {})
-        subnets = dhcp4_config.get('subnet4', [])
-        
-        subnet_list = []
-        for subnet in subnets:
-            subnet_list.append({
-                'id': subnet.get('id'),
-                'subnet': subnet.get('subnet'),
-                'pools': subnet.get('pools', [])
-            })
-        
-        return subnet_list
+            dhcp4_config = config.get('Dhcp4', {})
+            subnets = dhcp4_config.get('subnet4', [])
+
+            subnet_list = []
+            for subnet in subnets:
+                subnet_list.append({
+                    'id': subnet.get('id'),
+                    'subnet': subnet.get('subnet'),
+                    'pools': subnet.get('pools', [])
+                })
+
+            return subnet_list
+        except Exception as e:
+            logger.warning(f"Failed to parse subnets from KEA config: {e}")
+            return []
