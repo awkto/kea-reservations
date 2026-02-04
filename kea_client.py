@@ -294,10 +294,10 @@ class KeaClient:
     def get_reservations(self, subnet_id: Optional[int] = None) -> List[Dict]:
         """
         Get all DHCPv4 reservations
-        
+
         Args:
             subnet_id: Optional subnet ID to filter reservations
-            
+
         Returns:
             List of reservation dictionaries
         """
@@ -305,22 +305,22 @@ class KeaClient:
             # Get config to extract reservations
             result = self._send_command("config-get", ["dhcp4"])
             config = result.get('arguments', {})
-            
+
             reservations = []
-            
+
             # Extract reservations from subnet configurations
             dhcp4_config = config.get('Dhcp4', {})
             subnets = dhcp4_config.get('subnet4', [])
-            
+
             for subnet in subnets:
                 current_subnet_id = subnet.get('id')
-                
+
                 # Filter by subnet if specified
                 if subnet_id is not None and current_subnet_id != subnet_id:
                     continue
-                
+
                 subnet_prefix = subnet.get('subnet', '')
-                
+
                 for reservation in subnet.get('reservations', []):
                     res_data = {
                         'ip-address': reservation.get('ip-address'),
@@ -329,25 +329,39 @@ class KeaClient:
                         'subnet-id': current_subnet_id,
                         'subnet': subnet_prefix
                     }
+
+                    # Extract option-data if present
+                    option_data = reservation.get('option-data', [])
+                    if option_data:
+                        res_data['option-data'] = option_data
+
+                        # Extract DNS servers specifically for easy access
+                        for option in option_data:
+                            if option.get('name') == 'domain-name-servers':
+                                res_data['dns-servers'] = option.get('data', '')
+                                break
+
                     reservations.append(res_data)
-            
+
             return reservations
-            
+
         except Exception as e:
             logger.warning(f"Could not fetch reservations: {e}")
             return []
     
-    def create_reservation(self, ip_address: str, hw_address: str, 
-                          hostname: str = "", subnet_id: Optional[int] = None) -> Dict:
+    def create_reservation(self, ip_address: str, hw_address: str,
+                          hostname: str = "", subnet_id: Optional[int] = None,
+                          option_data: Optional[List[Dict]] = None) -> Dict:
         """
         Create a new DHCPv4 reservation
-        
+
         Args:
             ip_address: IP address to reserve
             hw_address: Hardware (MAC) address
             hostname: Optional hostname
             subnet_id: Subnet ID where the reservation should be created
-            
+            option_data: Optional list of DHCP options (e.g., DNS servers)
+
         Returns:
             Result of the reservation creation
         """
@@ -355,17 +369,20 @@ class KeaClient:
             "ip-address": ip_address,
             "hw-address": hw_address
         }
-        
+
         if hostname:
             reservation["hostname"] = hostname
-        
+
         if subnet_id is not None:
             reservation["subnet-id"] = subnet_id
-        
+
+        if option_data:
+            reservation["option-data"] = option_data
+
         arguments = {
             "reservation": reservation
         }
-        
+
         try:
             result = self._send_command("reservation-add", ["dhcp4"], arguments)
             logger.info(f"Created reservation: IP={ip_address}, MAC={hw_address}")
@@ -373,22 +390,24 @@ class KeaClient:
         except CommandNotSupportedException as e:
             logger.warning(f"reservation-add not supported, using config-set fallback: {e}")
             # Fallback: Add reservation via config modification
-            return self._create_reservation_via_config(ip_address, hw_address, hostname, subnet_id)
+            return self._create_reservation_via_config(ip_address, hw_address, hostname, subnet_id, option_data)
         except Exception as e:
             logger.error(f"Unexpected error in create_reservation: {type(e).__name__}: {e}")
             raise
     
-    def _create_reservation_via_config(self, ip_address: str, hw_address: str, 
-                                       hostname: str = "", subnet_id: Optional[int] = None) -> Dict:
+    def _create_reservation_via_config(self, ip_address: str, hw_address: str,
+                                       hostname: str = "", subnet_id: Optional[int] = None,
+                                       option_data: Optional[List[Dict]] = None) -> Dict:
         """
         Create reservation by modifying the configuration (fallback when host_cmds not available)
-        
+
         Args:
             ip_address: IP address to reserve
             hw_address: Hardware (MAC) address
             hostname: Optional hostname
             subnet_id: Subnet ID where the reservation should be created
-            
+            option_data: Optional list of DHCP options
+
         Returns:
             Created reservation dictionary
         """
@@ -396,11 +415,11 @@ class KeaClient:
         result = self._send_command("config-get", ["dhcp4"])
         config = result.get('arguments', {})
         dhcp4_config = config.get('Dhcp4', {})
-        
+
         # Find the target subnet
         subnets = dhcp4_config.get('subnet4', [])
         target_subnet = None
-        
+
         for subnet in subnets:
             if subnet_id is None or subnet.get('id') == subnet_id:
                 target_subnet = subnet
@@ -409,10 +428,10 @@ class KeaClient:
                 # If no subnet_id specified, use first subnet
                 if target_subnet is None:
                     target_subnet = subnet
-        
+
         if target_subnet is None:
             raise Exception(f"Subnet {subnet_id} not found in configuration")
-        
+
         # Create reservation object
         new_reservation = {
             "hw-address": hw_address,
@@ -420,26 +439,29 @@ class KeaClient:
         }
         if hostname:
             new_reservation["hostname"] = hostname
-        
+
+        if option_data:
+            new_reservation["option-data"] = option_data
+
         # Add reservation to subnet
         if 'reservations' not in target_subnet:
             target_subnet['reservations'] = []
-        
+
         # Check if reservation already exists
         for res in target_subnet['reservations']:
             if res.get('ip-address') == ip_address or res.get('hw-address') == hw_address:
                 raise Exception(f"Reservation already exists for {ip_address} or {hw_address}")
-        
+
         target_subnet['reservations'].append(new_reservation)
-        
+
         # Apply the updated configuration
         set_arguments = {
             "Dhcp4": dhcp4_config
         }
-        
+
         self._send_command("config-set", ["dhcp4"], set_arguments)
         logger.info(f"Created reservation via config-set: IP={ip_address}, MAC={hw_address}")
-        
+
         return new_reservation
     
     def delete_reservation(self, ip_address: str, subnet_id: Optional[int] = None):

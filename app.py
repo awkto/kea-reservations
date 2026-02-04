@@ -199,11 +199,11 @@ def is_config_valid():
     """
     current_config = load_config()
     kea_url = current_config['kea']['control_agent_url']
-    
+
     # Check if using empty URL
     if not kea_url or kea_url.strip() == '':
         return False
-    
+
     # Check if it's still pointing to localhost (default/unconfigured)
     # This is OK for development but indicates first-start state in production
     if 'localhost' in kea_url.lower() or '127.0.0.1' in kea_url:
@@ -211,8 +211,42 @@ def is_config_valid():
         # We'll be lenient and only reject if it's the exact default
         if kea_url == 'http://localhost:8000':
             return False
-    
+
     return True
+
+
+def validate_dns_servers(dns_string: str) -> tuple[bool, str, list]:
+    """
+    Validate DNS server IP addresses string
+
+    Args:
+        dns_string: Comma-separated IP addresses (e.g., "8.8.8.8, 8.8.4.4")
+
+    Returns:
+        Tuple of (is_valid, error_message, cleaned_dns_list)
+    """
+    if not dns_string or dns_string.strip() == '':
+        return True, '', []
+
+    import ipaddress
+
+    # Split by comma and clean whitespace
+    dns_ips = [ip.strip() for ip in dns_string.split(',') if ip.strip()]
+
+    if len(dns_ips) == 0:
+        return True, '', []
+
+    if len(dns_ips) > 4:
+        return False, 'Maximum of 4 DNS servers allowed', []
+
+    # Validate each IP address
+    for dns_ip in dns_ips:
+        try:
+            ipaddress.IPv4Address(dns_ip)
+        except ValueError:
+            return False, f'Invalid IP address: {dns_ip}', []
+
+    return True, '', dns_ips
 
 
 @app.route('/')
@@ -489,6 +523,10 @@ def create_reservation():
               type: integer
               description: Subnet ID (optional, uses default if not specified)
               example: 1
+            dns_servers:
+              type: string
+              description: Comma-separated DNS server IPs (optional, e.g., "8.8.8.8, 8.8.4.4")
+              example: "8.8.8.8, 8.8.4.4"
     responses:
       200:
         description: Reservation created successfully
@@ -527,39 +565,58 @@ def create_reservation():
     try:
         client = get_kea_client()
         data = request.get_json()
-        
+
         if not data:
             return jsonify({
                 'success': False,
                 'error': 'No data provided'
             }), 400
-        
+
         ip_address = data.get('ip_address')
         hw_address = data.get('hw_address')
         hostname = data.get('hostname', '')
         subnet_id = data.get('subnet_id')
-        
+        dns_servers = data.get('dns_servers', '')
+
         if not ip_address or not hw_address:
             return jsonify({
                 'success': False,
                 'error': 'ip_address and hw_address are required'
             }), 400
-        
+
+        # Validate DNS servers if provided
+        option_data = None
+        if dns_servers:
+            is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
+            if not is_valid:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid DNS servers: {error_msg}'
+                }), 400
+
+            if dns_list:
+                # Convert to Kea option-data format
+                option_data = [{
+                    "name": "domain-name-servers",
+                    "data": ", ".join(dns_list)
+                }]
+
         logger.info(f"Creating reservation: IP={ip_address}, MAC={hw_address}")
-        
+
         result = client.create_reservation(
             ip_address=ip_address,
             hw_address=hw_address,
             hostname=hostname,
-            subnet_id=subnet_id
+            subnet_id=subnet_id,
+            option_data=option_data
         )
-        
+
         return jsonify({
             'success': True,
             'message': f'Successfully created reservation for {ip_address}',
             'reservation': result
         }), 200
-        
+
     except Exception as e:
         logger.error(f"Error creating reservation: {e}")
         return jsonify({
@@ -607,6 +664,10 @@ def promote_lease():
               type: integer
               description: Subnet ID (optional)
               example: 1
+            dns_servers:
+              type: string
+              description: Comma-separated DNS server IPs (optional, e.g., "8.8.8.8, 8.8.4.4")
+              example: "8.8.8.8, 8.8.4.4"
     responses:
       200:
         description: Lease promoted successfully
@@ -645,29 +706,47 @@ def promote_lease():
     try:
         client = get_kea_client()
         data = request.get_json()
-        
+
         if not data:
             return jsonify({
                 'success': False,
                 'error': 'No data provided'
             }), 400
-        
+
         ip_address = data.get('ip_address')
         hw_address = data.get('hw_address')
         hostname = data.get('hostname', '')
         subnet_id = data.get('subnet_id')
-        
+        dns_servers = data.get('dns_servers', '')
+
         if not ip_address or not hw_address:
             return jsonify({
                 'success': False,
                 'error': 'ip_address and hw_address are required'
             }), 400
-        
+
+        # Validate DNS servers if provided
+        option_data = None
+        if dns_servers:
+            is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
+            if not is_valid:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid DNS servers: {error_msg}'
+                }), 400
+
+            if dns_list:
+                # Convert to Kea option-data format
+                option_data = [{
+                    "name": "domain-name-servers",
+                    "data": ", ".join(dns_list)
+                }]
+
         # Check if a reservation already exists for this IP
         try:
             reservations = client.get_reservations(subnet_id=subnet_id)
             existing_reservation = next((r for r in reservations if r.get('ip-address') == ip_address), None)
-            
+
             if existing_reservation:
                 logger.warning(f"Cannot promote: reservation already exists for IP {ip_address}")
                 return jsonify({
@@ -677,22 +756,23 @@ def promote_lease():
         except Exception as e:
             logger.warning(f"Could not verify existing reservations: {e}")
             # Continue anyway if reservation check fails
-        
+
         logger.info(f"Promoting lease: IP={ip_address}, MAC={hw_address}")
-        
+
         result = client.create_reservation(
             ip_address=ip_address,
             hw_address=hw_address,
             hostname=hostname,
-            subnet_id=subnet_id
+            subnet_id=subnet_id,
+            option_data=option_data
         )
-        
+
         return jsonify({
             'success': True,
             'message': f'Successfully promoted {ip_address} to reservation',
             'reservation': result
         }), 200
-        
+
     except Exception as e:
         logger.error(f"Error promoting lease: {e}")
         return jsonify({
@@ -1434,7 +1514,7 @@ def import_reservations():
                 # Validate required fields
                 ip_address = reservation.get('ip-address')
                 hw_address = reservation.get('hw-address')
-                
+
                 if not ip_address or not hw_address:
                     failed_count += 1
                     failed_items.append({
@@ -1443,21 +1523,50 @@ def import_reservations():
                         'error': 'Missing required fields (ip-address or hw-address)'
                     })
                     continue
-                
+
                 hostname = reservation.get('hostname', '')
                 subnet_id = reservation.get('subnet-id')
-                
+
+                # Handle DNS servers - support both formats
+                option_data = None
+
+                # Check for option-data format (Kea native format)
+                if 'option-data' in reservation:
+                    option_data = reservation.get('option-data')
+
+                # Check for simplified dns-servers format
+                elif 'dns-servers' in reservation:
+                    dns_servers = reservation.get('dns-servers', '')
+                    if dns_servers:
+                        is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
+                        if not is_valid:
+                            failed_count += 1
+                            failed_items.append({
+                                'index': idx + 1,
+                                'ip': ip_address,
+                                'mac': hw_address,
+                                'error': f'Invalid DNS servers: {error_msg}'
+                            })
+                            continue
+
+                        if dns_list:
+                            option_data = [{
+                                "name": "domain-name-servers",
+                                "data": ", ".join(dns_list)
+                            }]
+
                 # Attempt to create reservation
                 client.create_reservation(
                     ip_address=ip_address,
                     hw_address=hw_address,
                     hostname=hostname,
-                    subnet_id=subnet_id
+                    subnet_id=subnet_id,
+                    option_data=option_data
                 )
-                
+
                 success_count += 1
                 logger.info(f"Imported reservation: IP={ip_address}, MAC={hw_address}")
-                
+
             except Exception as e:
                 failed_count += 1
                 error_msg = str(e)

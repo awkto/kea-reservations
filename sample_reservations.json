@@ -1,6 +1,6 @@
 {
   "export_date": "2025-10-15T12:00:00",
-  "total_count": 3,
+  "total_count": 4,
   "reservations": [
     {
       "ip-address": "192.168.1.100",
@@ -22,6 +22,20 @@
       "hostname": "",
       "subnet-id": 1,
       "subnet": "192.168.1.0/24"
+    },
+    {
+      "ip-address": "192.168.1.103",
+      "hw-address": "aa:bb:cc:dd:ee:04",
+      "hostname": "custom-dns-device",
+      "subnet-id": 1,
+      "subnet": "192.168.1.0/24",
+      "dns-servers": "1.1.1.1, 1.0.0.1",
+      "option-data": [
+        {
+          "name": "domain-name-servers",
+          "data": "1.1.1.1, 1.0.0.1"
+        }
+      ]
     }
   ]
 }

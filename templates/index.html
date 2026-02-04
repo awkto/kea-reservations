@@ -177,9 +177,15 @@
                         </div>
                         <div class="mb-3">
                             <label for="promote-hostname" class="form-label">Hostname</label>
-                            <input type="text" class="form-control" id="promote-hostname" 
+                            <input type="text" class="form-control" id="promote-hostname"
                                    placeholder="Optional hostname for this device">
                             <div class="form-text">You can change or add a hostname for this reservation.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="promote-dns-servers" class="form-label">Custom DNS Servers</label>
+                            <input type="text" class="form-control" id="promote-dns-servers"
+                                   placeholder="e.g., 8.8.8.8, 8.8.4.4 (leave empty for subnet default)">
+                            <div class="form-text">Specify custom DNS servers for this device only. Comma-separated IP addresses.</div>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Subnet ID</label>
@@ -238,6 +244,7 @@
                                     <th>MAC Address</th>
                                     <th>Hostname</th>
                                     <th>Subnet</th>
+                                    <th>DNS Servers</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -274,8 +281,14 @@
                         </div>
                         <div class="mb-3">
                             <label for="new-hostname" class="form-label">Hostname</label>
-                            <input type="text" class="form-control" id="new-hostname" 
+                            <input type="text" class="form-control" id="new-hostname"
                                    placeholder="my-device">
+                        </div>
+                        <div class="mb-3">
+                            <label for="new-dns-servers" class="form-label">Custom DNS Servers</label>
+                            <input type="text" class="form-control" id="new-dns-servers"
+                                   placeholder="e.g., 8.8.8.8, 8.8.4.4 (leave empty for subnet default)">
+                            <div class="form-text">Specify custom DNS servers for this device only. Comma-separated IP addresses.</div>
                         </div>
                         <div class="mb-3">
                             <label for="new-subnet-id" class="form-label">Subnet</label>
@@ -324,8 +337,14 @@
                         </div>
                         <div class="mb-3">
                             <label for="edit-hostname" class="form-label">Hostname</label>
-                            <input type="text" class="form-control" id="edit-hostname" 
+                            <input type="text" class="form-control" id="edit-hostname"
                                    placeholder="my-device">
+                        </div>
+                        <div class="mb-3">
+                            <label for="edit-dns-servers" class="form-label">Custom DNS Servers</label>
+                            <input type="text" class="form-control" id="edit-dns-servers"
+                                   placeholder="e.g., 8.8.8.8, 8.8.4.4 (leave empty for subnet default)">
+                            <div class="form-text">Specify custom DNS servers for this device only. Comma-separated IP addresses.</div>
                         </div>
                         <div class="mb-3">
                             <label for="edit-subnet-id" class="form-label">Subnet</label>
@@ -956,6 +975,7 @@
             // Get values from the form
             const ipAddress = document.getElementById('promote-ip-address').value.trim();
             const hostname = document.getElementById('promote-hostname').value.trim();
+            const dnsServers = document.getElementById('promote-dns-servers').value.trim();
             const originalIP = selectedLease['ip-address'];
             const subnetId = selectedLease['subnet-id'];
             
@@ -1011,7 +1031,8 @@
                         ip_address: ipAddress,
                         hw_address: selectedLease['hw-address'],
                         hostname: hostname,
-                        subnet_id: subnetId
+                        subnet_id: subnetId,
+                        dns_servers: dnsServers
                     })
                 });
                 
@@ -1055,13 +1076,13 @@
                 tbody.innerHTML = '';
                 
                 if (allReservations.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No reservations found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No reservations found</td></tr>';
                 } else {
                     // Sort reservations by IP address
                     const sortedReservations = [...allReservations].sort((a, b) => {
                         const ipA = a['ip-address'].split('.').map(num => parseInt(num));
                         const ipB = b['ip-address'].split('.').map(num => parseInt(num));
-                        
+
                         for (let i = 0; i < 4; i++) {
                             if (ipA[i] !== ipB[i]) {
                                 return ipA[i] - ipB[i];
@@ -1069,20 +1090,24 @@
                         }
                         return 0;
                     });
-                    
+
                     sortedReservations.forEach(res => {
                         const row = document.createElement('tr');
+                        const dnsServers = res['dns-servers'] || '';
+                        const dnsDisplay = dnsServers ? `<code style="font-size: 0.85em;">${dnsServers}</code>` : '<span class="text-muted">Default</span>';
+
                         row.innerHTML = `
                             <td><strong>${res['ip-address']}</strong></td>
                             <td><code>${res['hw-address']}</code></td>
                             <td>${res.hostname || '<em>none</em>'}</td>
                             <td>${res.subnet || res['subnet-id']}</td>
+                            <td>${dnsDisplay}</td>
                             <td>
-                                <button class="btn btn-primary btn-sm action-btn me-1" 
+                                <button class="btn btn-primary btn-sm action-btn me-1"
                                         onclick='editReservation(${JSON.stringify(res)})'>
                                     <i class="bi bi-pencil"></i> Edit
                                 </button>
-                                <button class="btn btn-danger btn-sm action-btn" 
+                                <button class="btn btn-danger btn-sm action-btn"
                                         onclick='deleteReservation(${JSON.stringify(res)})'>
                                     <i class="bi bi-trash"></i> Delete
                                 </button>
@@ -1109,13 +1134,14 @@
             const ipAddress = document.getElementById('new-ip-address').value.trim();
             const hwAddress = document.getElementById('new-hw-address').value.trim();
             const hostname = document.getElementById('new-hostname').value.trim();
+            const dnsServers = document.getElementById('new-dns-servers').value.trim();
             const subnetId = document.getElementById('new-subnet-id').value;
-            
+
             if (!ipAddress || !hwAddress) {
                 alert('IP Address and MAC Address are required');
                 return;
             }
-            
+
             try {
                 const response = await fetch('/api/reservations', {
                     method: 'POST',
@@ -1126,7 +1152,8 @@
                         ip_address: ipAddress,
                         hw_address: hwAddress,
                         hostname: hostname,
-                        subnet_id: subnetId ? parseInt(subnetId) : null
+                        subnet_id: subnetId ? parseInt(subnetId) : null,
+                        dns_servers: dnsServers
                     })
                 });
                 
@@ -1151,42 +1178,44 @@
 
         function editReservation(reservation) {
             editingReservation = reservation;
-            
+
             document.getElementById('edit-ip-address').value = reservation['ip-address'];
             document.getElementById('edit-hw-address').value = reservation['hw-address'];
             document.getElementById('edit-hostname').value = reservation.hostname || '';
+            document.getElementById('edit-dns-servers').value = reservation['dns-servers'] || '';
             document.getElementById('edit-subnet-id').value = reservation['subnet-id'] || '';
-            
+
             editReservationModal.show();
         }
 
         async function confirmEditReservation() {
             if (!editingReservation) return;
-            
+
             const ipAddress = document.getElementById('edit-ip-address').value.trim();
             const hwAddress = document.getElementById('edit-hw-address').value.trim();
             const hostname = document.getElementById('edit-hostname').value.trim();
+            const dnsServers = document.getElementById('edit-dns-servers').value.trim();
             const subnetId = document.getElementById('edit-subnet-id').value;
-            
+
             if (!ipAddress || !hwAddress) {
                 alert('IP Address and MAC Address are required');
                 return;
             }
-            
+
             try {
                 // Delete old reservation
                 const oldIpAddress = editingReservation['ip-address'];
                 const oldSubnetId = editingReservation['subnet-id'];
-                
+
                 let deleteUrl = `/api/reservation/${encodeURIComponent(oldIpAddress)}`;
                 if (oldSubnetId) {
                     deleteUrl += `?subnet_id=${oldSubnetId}`;
                 }
-                
+
                 await fetch(deleteUrl, {
                     method: 'DELETE'
                 });
-                
+
                 // Create new reservation with updated values
                 const response = await fetch('/api/reservations', {
                     method: 'POST',
@@ -1197,7 +1226,8 @@
                         ip_address: ipAddress,
                         hw_address: hwAddress,
                         hostname: hostname,
-                        subnet_id: subnetId ? parseInt(subnetId) : null
+                        subnet_id: subnetId ? parseInt(subnetId) : null,
+                        dns_servers: dnsServers
                     })
                 });
                 
