@@ -454,10 +454,12 @@ class KeaClient:
         if 'reservations' not in target_subnet:
             target_subnet['reservations'] = []
 
-        # Check if reservation already exists
-        for res in target_subnet['reservations']:
-            if res.get('ip-address') == ip_address or res.get('hw-address') == hw_address:
-                raise Exception(f"Reservation already exists for {ip_address} or {hw_address}")
+        # Check if reservation already exists and remove it (to enable overwrite)
+        existing_reservations = target_subnet['reservations'][:]
+        target_subnet['reservations'] = [
+            res for res in existing_reservations
+            if res.get('ip-address') != ip_address and res.get('hw-address') != hw_address
+        ]
 
         target_subnet['reservations'].append(new_reservation)
 
