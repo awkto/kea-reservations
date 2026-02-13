@@ -1569,6 +1569,42 @@ def delete_reservation(ip_address):
         }), 500
 
 
+@app.route('/api/leases/ip/<ip_address>', methods=['DELETE'])
+def delete_lease_by_ip(ip_address):
+    """Delete the lease for a specific IP address
+    ---
+    tags:
+      - Leases
+    summary: Delete DHCP lease by IP address
+    description: Deletes the lease for the given IP address regardless of which client owns it. Used to clear a conflicting lease before a VM boots with a reservation for that IP.
+    parameters:
+      - name: ip_address
+        in: path
+        type: string
+        required: true
+        description: IP address (e.g. 10.33.11.17)
+    responses:
+      200:
+        description: Lease deleted (deleted=0 if none existed)
+      500:
+        description: Internal server error
+    """
+    try:
+        client = get_kea_client()
+        count = client.delete_lease_by_ip(ip_address)
+        return jsonify({
+            'success': True,
+            'deleted': count,
+            'message': f'Deleted {count} lease(s) for IP {ip_address}'
+        }), 200
+    except Exception as e:
+        logger.error(f"Error deleting lease for IP {ip_address}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/leases/mac/<mac_address>', methods=['DELETE'])
 def delete_leases_by_mac(mac_address):
     """Delete all leases for a given MAC address

@@ -499,6 +499,27 @@ class KeaClient:
             logger.error(f"Unexpected error in delete_reservation: {type(e).__name__}: {e}")
             raise
 
+    def delete_lease_by_ip(self, ip_address: str) -> int:
+        """
+        Delete the DHCPv4 lease for a specific IP address (any owner).
+
+        Args:
+            ip_address: IP address whose lease should be deleted
+
+        Returns:
+            1 if deleted, 0 if no lease existed
+        """
+        try:
+            self._send_command("lease4-del", ["dhcp4"], arguments={"ip-address": ip_address})
+            logger.info(f"Deleted lease for IP={ip_address}")
+            return 1
+        except Exception as e:
+            # result code 3 = not found — that's fine
+            if "not found" in str(e).lower() or "no lease" in str(e).lower():
+                return 0
+            logger.warning(f"Failed to delete lease for IP {ip_address}: {e}")
+            return 0
+
     def delete_leases_by_mac(self, hw_address: str) -> int:
         """
         Delete all DHCPv4 leases for a given MAC address.
