@@ -498,7 +498,35 @@ class KeaClient:
         except Exception as e:
             logger.error(f"Unexpected error in delete_reservation: {type(e).__name__}: {e}")
             raise
-    
+
+    def delete_leases_by_mac(self, hw_address: str) -> int:
+        """
+        Delete all DHCPv4 leases for a given MAC address.
+
+        Args:
+            hw_address: Hardware (MAC) address (e.g. "bc:24:11:xx:xx:xx")
+
+        Returns:
+            Number of leases deleted
+        """
+        hw_address = hw_address.lower()
+        all_leases = self.get_leases()
+        matching = [l for l in all_leases if l.get('hw-address', '').lower() == hw_address]
+
+        deleted = 0
+        for lease in matching:
+            ip = lease.get('ip-address')
+            if ip:
+                try:
+                    self._send_command("lease4-del", ["dhcp4"], arguments={"ip-address": ip})
+                    logger.info(f"Deleted lease: IP={ip}, MAC={hw_address}")
+                    deleted += 1
+                except Exception as e:
+                    logger.warning(f"Failed to delete lease {ip} for MAC {hw_address}: {e}")
+
+        return deleted
+
+
     def _delete_reservation_via_config(self, ip_address: str, subnet_id: Optional[int] = None):
         """
         Delete reservation by modifying the configuration (fallback when host_cmds not available)

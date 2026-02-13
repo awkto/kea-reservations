@@ -1569,6 +1569,42 @@ def delete_reservation(ip_address):
         }), 500
 
 
+@app.route('/api/leases/mac/<mac_address>', methods=['DELETE'])
+def delete_leases_by_mac(mac_address):
+    """Delete all leases for a given MAC address
+    ---
+    tags:
+      - Leases
+    summary: Delete all DHCP leases for a MAC address
+    description: Finds and deletes every active lease for the given MAC address. Used to clear stale dynamic leases before booting a VM that has a reservation.
+    parameters:
+      - name: mac_address
+        in: path
+        type: string
+        required: true
+        description: MAC address (e.g. bc:24:11:xx:xx:xx)
+    responses:
+      200:
+        description: Leases deleted (count may be 0 if none existed)
+      500:
+        description: Internal server error
+    """
+    try:
+        client = get_kea_client()
+        count = client.delete_leases_by_mac(mac_address)
+        return jsonify({
+            'success': True,
+            'deleted': count,
+            'message': f'Deleted {count} lease(s) for MAC {mac_address}'
+        }), 200
+    except Exception as e:
+        logger.error(f"Error deleting leases for MAC {mac_address}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/reservations/export', methods=['GET'])
 def export_reservations():
     """Export all DHCP reservations to JSON file
