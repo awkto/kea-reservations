@@ -45,7 +45,12 @@ jobs:
           short-description: "Kea DHCPv4 lease promotion GUI"
           readme-filepath: ./README.md
         continue-on-error: true
-      
+
+      - name: Update version.txt with tag version
+        run: |
+          echo "${{ steps.extract_version.outputs.VERSION }}" > version.txt
+          echo "Updated version.txt to: $(cat version.txt)"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
