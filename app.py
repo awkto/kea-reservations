@@ -35,7 +35,7 @@ swagger_template = {
     "info": {
         "title": "KEA DHCP Reservations API",
         "description": "API for managing KEA DHCP leases and reservations. Allows creating, listing, and promoting leases to permanent reservations.",
-        "version": "1.0.1",
+        "version": "1.5.0",
         "contact": {
             "name": "KEA GUI Reservations",
             "url": "https://github.com/awkto/kea-gui-reservations"
@@ -495,7 +495,15 @@ def create_reservation():
     tags:
       - Reservations
     summary: Create a new DHCP reservation
-    description: Creates a permanent DHCP reservation for a specific IP and MAC address combination.
+    description: |
+      Creates a permanent DHCP reservation for a specific IP and MAC address combination.
+
+      By default, the API rejects requests that would overwrite an existing reservation
+      for a different MAC address (returns 409 Conflict). Use the `force` flag to explicitly
+      allow overwriting an existing reservation.
+
+      If the same MAC already has a reservation for the requested IP, the request is treated
+      as idempotent and succeeds without changes.
     parameters:
       - name: body
         in: body
@@ -527,6 +535,10 @@ def create_reservation():
               type: string
               description: Comma-separated DNS server IPs (optional, e.g., "8.8.8.8, 8.8.4.4")
               example: "8.8.8.8, 8.8.4.4"
+            force:
+              type: boolean
+              description: Force overwrite of existing reservation for a different MAC (default false)
+              example: false
     responses:
       200:
         description: Reservation created successfully
@@ -559,6 +571,27 @@ def create_reservation():
               type: boolean
             error:
               type: string
+      409:
+        description: Conflict - reservation already exists for this IP with a different MAC
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+              example: false
+            error:
+              type: string
+              example: "DHCP reservation already exists for IP 192.168.1.100 with a different MAC (aa:bb:cc:dd:ee:01). Use 'force' to overwrite."
+            existing_reservation:
+              type: object
+              description: The existing conflicting reservation
+              properties:
+                ip-address:
+                  type: string
+                hw-address:
+                  type: string
+                hostname:
+                  type: string
       500:
         description: Internal server error
     """
@@ -577,12 +610,89 @@ def create_reservation():
         hostname = data.get('hostname', '')
         subnet_id = data.get('subnet_id')
         dns_servers = data.get('dns_servers', '')
+        force = data.get('force', False)
 
         if not ip_address or not hw_address:
             return jsonify({
                 'success': False,
                 'error': 'ip_address and hw_address are required'
             }), 400
+
+        # Normalize MAC to lowercase for comparison
+        hw_address_lower = hw_address.lower()
+
+        # Check for existing reservation conflicts (unless force=true)
+        try:
+            reservations = client.get_reservations(subnet_id=subnet_id)
+
+            # Check for IP conflict
+            existing_by_ip = next(
+                (r for r in reservations if r.get('ip-address') == ip_address), None
+            )
+
+            if existing_by_ip:
+                existing_mac = existing_by_ip.get('hw-address', '').lower()
+
+                if existing_mac == hw_address_lower:
+                    # Same MAC already has this IP — idempotent, return success
+                    logger.info(f"Reservation already exists for IP={ip_address}, MAC={hw_address} — no changes needed")
+                    return jsonify({
+                        'success': True,
+                        'message': f'Reservation already exists for {ip_address} with this MAC',
+                        'reservation': existing_by_ip
+                    }), 200
+
+                if not force:
+                    # Different MAC — conflict
+                    logger.warning(
+                        f"Conflict: IP {ip_address} already reserved for MAC {existing_mac}, "
+                        f"requested by MAC {hw_address_lower}"
+                    )
+                    return jsonify({
+                        'success': False,
+                        'error': (
+                            f"DHCP reservation already exists for IP {ip_address} "
+                            f"with a different MAC ({existing_mac}). "
+                            f"Use 'force' to overwrite."
+                        ),
+                        'existing_reservation': existing_by_ip
+                    }), 409
+
+                # force=true — log and proceed to overwrite
+                logger.info(
+                    f"Force overwriting reservation for IP {ip_address}: "
+                    f"old MAC={existing_mac}, new MAC={hw_address_lower}"
+                )
+
+            # Check for MAC conflict (same MAC, different IP)
+            existing_by_mac = next(
+                (r for r in reservations if r.get('hw-address', '').lower() == hw_address_lower), None
+            )
+
+            if existing_by_mac and existing_by_mac.get('ip-address') != ip_address:
+                existing_ip = existing_by_mac.get('ip-address')
+                if not force:
+                    logger.warning(
+                        f"Conflict: MAC {hw_address} already has reservation for IP {existing_ip}, "
+                        f"requested IP {ip_address}"
+                    )
+                    return jsonify({
+                        'success': False,
+                        'error': (
+                            f"MAC {hw_address} already has a reservation for a different IP ({existing_ip}). "
+                            f"Use 'force' to overwrite."
+                        ),
+                        'existing_reservation': existing_by_mac
+                    }), 409
+
+                logger.info(
+                    f"Force overwriting reservation for MAC {hw_address}: "
+                    f"old IP={existing_ip}, new IP={ip_address}"
+                )
+
+        except Exception as e:
+            logger.warning(f"Could not verify existing reservations: {e}")
+            # Continue anyway if reservation check fails
 
         # Validate DNS servers if provided
         option_data = None
