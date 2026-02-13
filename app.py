@@ -8,11 +8,16 @@ import logging
 from flask import Flask, render_template, jsonify, request
 import yaml
 from flasgger import Swagger
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from kea_client import KeaClient
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Cross-process lock to prevent TOCTOU race conditions when multiple Gunicorn
+# workers check-then-create reservations concurrently.
+RESERVATION_LOCK = FileLock("/tmp/kea_reservation.lock", timeout=15)
 
 # Initialize Swagger
 swagger_config = {
@@ -621,111 +626,119 @@ def create_reservation():
         # Normalize MAC to lowercase for comparison
         hw_address_lower = hw_address.lower()
 
-        # Check for existing reservation conflicts (unless force=true)
         try:
-            reservations = client.get_reservations(subnet_id=subnet_id)
+            with RESERVATION_LOCK:
+                # Check for existing reservation conflicts (unless force=true)
+                try:
+                    reservations = client.get_reservations(subnet_id=subnet_id)
 
-            # Check for IP conflict
-            existing_by_ip = next(
-                (r for r in reservations if r.get('ip-address') == ip_address), None
-            )
-
-            if existing_by_ip:
-                existing_mac = existing_by_ip.get('hw-address', '').lower()
-
-                if existing_mac == hw_address_lower:
-                    # Same MAC already has this IP — idempotent, return success
-                    logger.info(f"Reservation already exists for IP={ip_address}, MAC={hw_address} — no changes needed")
-                    return jsonify({
-                        'success': True,
-                        'message': f'Reservation already exists for {ip_address} with this MAC',
-                        'reservation': existing_by_ip
-                    }), 200
-
-                if not force:
-                    # Different MAC — conflict
-                    logger.warning(
-                        f"Conflict: IP {ip_address} already reserved for MAC {existing_mac}, "
-                        f"requested by MAC {hw_address_lower}"
+                    # Check for IP conflict
+                    existing_by_ip = next(
+                        (r for r in reservations if r.get('ip-address') == ip_address), None
                     )
-                    return jsonify({
-                        'success': False,
-                        'error': (
-                            f"DHCP reservation already exists for IP {ip_address} "
-                            f"with a different MAC ({existing_mac}). "
-                            f"Use 'force' to overwrite."
-                        ),
-                        'existing_reservation': existing_by_ip
-                    }), 409
 
-                # force=true — log and proceed to overwrite
-                logger.info(
-                    f"Force overwriting reservation for IP {ip_address}: "
-                    f"old MAC={existing_mac}, new MAC={hw_address_lower}"
+                    if existing_by_ip:
+                        existing_mac = existing_by_ip.get('hw-address', '').lower()
+
+                        if existing_mac == hw_address_lower:
+                            # Same MAC already has this IP — idempotent, return success
+                            logger.info(f"Reservation already exists for IP={ip_address}, MAC={hw_address} — no changes needed")
+                            return jsonify({
+                                'success': True,
+                                'message': f'Reservation already exists for {ip_address} with this MAC',
+                                'reservation': existing_by_ip
+                            }), 200
+
+                        if not force:
+                            # Different MAC — conflict
+                            logger.warning(
+                                f"Conflict: IP {ip_address} already reserved for MAC {existing_mac}, "
+                                f"requested by MAC {hw_address_lower}"
+                            )
+                            return jsonify({
+                                'success': False,
+                                'error': (
+                                    f"DHCP reservation already exists for IP {ip_address} "
+                                    f"with a different MAC ({existing_mac}). "
+                                    f"Use 'force' to overwrite."
+                                ),
+                                'existing_reservation': existing_by_ip
+                            }), 409
+
+                        # force=true — log and proceed to overwrite
+                        logger.info(
+                            f"Force overwriting reservation for IP {ip_address}: "
+                            f"old MAC={existing_mac}, new MAC={hw_address_lower}"
+                        )
+
+                    # Check for MAC conflict (same MAC, different IP)
+                    existing_by_mac = next(
+                        (r for r in reservations if r.get('hw-address', '').lower() == hw_address_lower), None
+                    )
+
+                    if existing_by_mac and existing_by_mac.get('ip-address') != ip_address:
+                        existing_ip = existing_by_mac.get('ip-address')
+                        if not force:
+                            logger.warning(
+                                f"Conflict: MAC {hw_address} already has reservation for IP {existing_ip}, "
+                                f"requested IP {ip_address}"
+                            )
+                            return jsonify({
+                                'success': False,
+                                'error': (
+                                    f"MAC {hw_address} already has a reservation for a different IP ({existing_ip}). "
+                                    f"Use 'force' to overwrite."
+                                ),
+                                'existing_reservation': existing_by_mac
+                            }), 409
+
+                        logger.info(
+                            f"Force overwriting reservation for MAC {hw_address}: "
+                            f"old IP={existing_ip}, new IP={ip_address}"
+                        )
+
+                except Exception as e:
+                    logger.warning(f"Could not verify existing reservations: {e}")
+                    # Continue anyway if reservation check fails
+
+                # Validate DNS servers if provided
+                option_data = None
+                if dns_servers:
+                    is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
+                    if not is_valid:
+                        return jsonify({
+                            'success': False,
+                            'error': f'Invalid DNS servers: {error_msg}'
+                        }), 400
+
+                    if dns_list:
+                        # Convert to Kea option-data format
+                        option_data = [{
+                            "name": "domain-name-servers",
+                            "data": ", ".join(dns_list)
+                        }]
+
+                logger.info(f"Creating reservation: IP={ip_address}, MAC={hw_address}")
+
+                result = client.create_reservation(
+                    ip_address=ip_address,
+                    hw_address=hw_address,
+                    hostname=hostname,
+                    subnet_id=subnet_id,
+                    option_data=option_data
                 )
 
-            # Check for MAC conflict (same MAC, different IP)
-            existing_by_mac = next(
-                (r for r in reservations if r.get('hw-address', '').lower() == hw_address_lower), None
-            )
-
-            if existing_by_mac and existing_by_mac.get('ip-address') != ip_address:
-                existing_ip = existing_by_mac.get('ip-address')
-                if not force:
-                    logger.warning(
-                        f"Conflict: MAC {hw_address} already has reservation for IP {existing_ip}, "
-                        f"requested IP {ip_address}"
-                    )
-                    return jsonify({
-                        'success': False,
-                        'error': (
-                            f"MAC {hw_address} already has a reservation for a different IP ({existing_ip}). "
-                            f"Use 'force' to overwrite."
-                        ),
-                        'existing_reservation': existing_by_mac
-                    }), 409
-
-                logger.info(
-                    f"Force overwriting reservation for MAC {hw_address}: "
-                    f"old IP={existing_ip}, new IP={ip_address}"
-                )
-
-        except Exception as e:
-            logger.warning(f"Could not verify existing reservations: {e}")
-            # Continue anyway if reservation check fails
-
-        # Validate DNS servers if provided
-        option_data = None
-        if dns_servers:
-            is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
-            if not is_valid:
                 return jsonify({
-                    'success': False,
-                    'error': f'Invalid DNS servers: {error_msg}'
-                }), 400
-
-            if dns_list:
-                # Convert to Kea option-data format
-                option_data = [{
-                    "name": "domain-name-servers",
-                    "data": ", ".join(dns_list)
-                }]
-
-        logger.info(f"Creating reservation: IP={ip_address}, MAC={hw_address}")
-
-        result = client.create_reservation(
-            ip_address=ip_address,
-            hw_address=hw_address,
-            hostname=hostname,
-            subnet_id=subnet_id,
-            option_data=option_data
-        )
-
-        return jsonify({
-            'success': True,
-            'message': f'Successfully created reservation for {ip_address}',
-            'reservation': result
-        }), 200
+                    'success': True,
+                    'message': f'Successfully created reservation for {ip_address}',
+                    'reservation': result
+                }), 200
+        except FileLockTimeout:
+            logger.error(f"Reservation lock timeout for IP={ip_address}, MAC={hw_address}")
+            return jsonify({
+                'success': False,
+                'error': 'Server busy processing another reservation request, please retry'
+            }), 503
 
     except Exception as e:
         logger.error(f"Error creating reservation: {e}")
@@ -852,36 +865,44 @@ def promote_lease():
                     "data": ", ".join(dns_list)
                 }]
 
-        # Check if a reservation already exists for this IP
         try:
-            reservations = client.get_reservations(subnet_id=subnet_id)
-            existing_reservation = next((r for r in reservations if r.get('ip-address') == ip_address), None)
+            with RESERVATION_LOCK:
+                # Check if a reservation already exists for this IP
+                try:
+                    reservations = client.get_reservations(subnet_id=subnet_id)
+                    existing_reservation = next((r for r in reservations if r.get('ip-address') == ip_address), None)
 
-            if existing_reservation:
-                logger.warning(f"Cannot promote: reservation already exists for IP {ip_address}")
+                    if existing_reservation:
+                        logger.warning(f"Cannot promote: reservation already exists for IP {ip_address}")
+                        return jsonify({
+                            'success': False,
+                            'error': f'A reservation already exists for IP {ip_address}. Please choose a different IP address.'
+                        }), 400
+                except Exception as e:
+                    logger.warning(f"Could not verify existing reservations: {e}")
+                    # Continue anyway if reservation check fails
+
+                logger.info(f"Promoting lease: IP={ip_address}, MAC={hw_address}")
+
+                result = client.create_reservation(
+                    ip_address=ip_address,
+                    hw_address=hw_address,
+                    hostname=hostname,
+                    subnet_id=subnet_id,
+                    option_data=option_data
+                )
+
                 return jsonify({
-                    'success': False,
-                    'error': f'A reservation already exists for IP {ip_address}. Please choose a different IP address.'
-                }), 400
-        except Exception as e:
-            logger.warning(f"Could not verify existing reservations: {e}")
-            # Continue anyway if reservation check fails
-
-        logger.info(f"Promoting lease: IP={ip_address}, MAC={hw_address}")
-
-        result = client.create_reservation(
-            ip_address=ip_address,
-            hw_address=hw_address,
-            hostname=hostname,
-            subnet_id=subnet_id,
-            option_data=option_data
-        )
-
-        return jsonify({
-            'success': True,
-            'message': f'Successfully promoted {ip_address} to reservation',
-            'reservation': result
-        }), 200
+                    'success': True,
+                    'message': f'Successfully promoted {ip_address} to reservation',
+                    'reservation': result
+                }), 200
+        except FileLockTimeout:
+            logger.error(f"Reservation lock timeout for promote IP={ip_address}, MAC={hw_address}")
+            return jsonify({
+                'success': False,
+                'error': 'Server busy processing another reservation request, please retry'
+            }), 503
 
     except Exception as e:
         logger.error(f"Error promoting lease: {e}")
@@ -1828,14 +1849,15 @@ def import_reservations():
                                 "data": ", ".join(dns_list)
                             }]
 
-                # Attempt to create reservation
-                client.create_reservation(
-                    ip_address=ip_address,
-                    hw_address=hw_address,
-                    hostname=hostname,
-                    subnet_id=subnet_id,
-                    option_data=option_data
-                )
+                # Attempt to create reservation (lock prevents concurrent config-set clobber)
+                with RESERVATION_LOCK:
+                    client.create_reservation(
+                        ip_address=ip_address,
+                        hw_address=hw_address,
+                        hostname=hostname,
+                        subnet_id=subnet_id,
+                        option_data=option_data
+                    )
 
                 success_count += 1
                 logger.info(f"Imported reservation: IP={ip_address}, MAC={hw_address}")
