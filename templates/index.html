@@ -406,6 +406,37 @@
         </div>
     </div>
 
+    <!-- Delete Lease Confirmation Modal -->
+    <div class="modal fade" id="deleteLeaseModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">
+                        <i class="bi bi-exclamation-triangle"></i> Delete Lease
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Lease will be deleted. Client reboot recommended.</p>
+                    <dl class="row mb-0">
+                        <dt class="col-sm-4">IP Address:</dt>
+                        <dd class="col-sm-8" id="delete-lease-modal-ip"></dd>
+                        <dt class="col-sm-4">MAC Address:</dt>
+                        <dd class="col-sm-8" id="delete-lease-modal-mac"></dd>
+                        <dt class="col-sm-4">Hostname:</dt>
+                        <dd class="col-sm-8 mb-0" id="delete-lease-modal-hostname"></dd>
+                    </dl>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" onclick="confirmDeleteLease()">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Configuration Modal -->
     <div class="modal fade" id="configModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -480,7 +511,17 @@
                                 <div class="form-text">Enable Flask debug mode (not recommended for production)</div>
                             </div>
                         </div>
-                        
+
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="config-confirm-lease-delete" checked>
+                                <label class="form-check-label" for="config-confirm-lease-delete">
+                                    Confirm lease deletion
+                                </label>
+                                <div class="form-text">Show a confirmation dialog before deleting a lease</div>
+                            </div>
+                        </div>
+
                         <h6 class="border-bottom pb-2 mb-3 mt-4">Logging Settings</h6>
                         
                         <div class="mb-3">
@@ -669,10 +710,12 @@
         let addReservationModal = null;
         let editReservationModal = null;
         let deleteReservationModal = null;
+        let deleteLeaseModal = null;
         let configModal = null;
         let importModal = null;
         let keaConfigModal = null;
         let keaConfigData = null;
+        let confirmLeaseDelete = localStorage.getItem('confirmLeaseDelete') !== 'false';
 
         // Initialize modals
         document.addEventListener('DOMContentLoaded', function() {
@@ -681,6 +724,7 @@
             addReservationModal = new bootstrap.Modal(document.getElementById('addReservationModal'));
             editReservationModal = new bootstrap.Modal(document.getElementById('editReservationModal'));
             deleteReservationModal = new bootstrap.Modal(document.getElementById('deleteReservationModal'));
+            deleteLeaseModal = new bootstrap.Modal(document.getElementById('deleteLeaseModal'));
             configModal = new bootstrap.Modal(document.getElementById('configModal'));
             importModal = new bootstrap.Modal(document.getElementById('importModal'));
             keaConfigModal = new bootstrap.Modal(document.getElementById('keaConfigModal'));
@@ -929,13 +973,22 @@
                        </button>`;
                 }
                 
+                const deleteButton = `<button class="btn btn-sm rounded-circle d-inline-flex align-items-center justify-content-center"
+                        style="width:30px;height:30px;padding:0;border:1px solid #dc3545;color:#dc3545;background:transparent;flex-shrink:0"
+                        onmouseover="this.style.background='#dc3545';this.style.color='white'"
+                        onmouseout="this.style.background='transparent';this.style.color='#dc3545'"
+                        title="Delete lease"
+                        onclick='deleteLease(${JSON.stringify(lease)})'>
+                    <i class="bi bi-x-lg" style="font-size:0.813rem"></i>
+                </button>`;
+
                 row.innerHTML = `
                     <td><strong>${lease['ip-address']}</strong></td>
                     <td><code>${lease['hw-address']}</code></td>
                     <td>${lease.hostname || '<em>none</em>'}</td>
                     <td><span class="badge bg-info">${lease['subnet-id']}</span></td>
                     <td>${validUntil}</td>
-                    <td>${actionButton}</td>
+                    <td><div class="d-flex align-items-center gap-2">${actionButton}${deleteButton}</div></td>
                 `;
                 
                 tbody.appendChild(row);
@@ -1414,6 +1467,42 @@
             }
         }
 
+        function deleteLease(lease) {
+            selectedLease = lease;
+
+            if (confirmLeaseDelete) {
+                document.getElementById('delete-lease-modal-ip').textContent = lease['ip-address'];
+                document.getElementById('delete-lease-modal-mac').textContent = lease['hw-address'];
+                document.getElementById('delete-lease-modal-hostname').textContent = lease.hostname || 'none';
+                deleteLeaseModal.show();
+            } else {
+                performDeleteLease(lease['ip-address']);
+            }
+        }
+
+        async function confirmDeleteLease() {
+            if (!selectedLease) return;
+            deleteLeaseModal.hide();
+            await performDeleteLease(selectedLease['ip-address']);
+        }
+
+        async function performDeleteLease(ipAddress) {
+            try {
+                const response = await fetch(`/api/leases/ip/${encodeURIComponent(ipAddress)}`, {
+                    method: 'DELETE'
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showAlert('success', `Lease for ${ipAddress} deleted`);
+                    loadLeases();
+                } else {
+                    throw new Error(data.error || 'Failed to delete lease');
+                }
+            } catch (error) {
+                alert(`Error deleting lease: ${error.message}`);
+            }
+        }
+
         function showAlert(type, message) {
             const alert = document.createElement('div');
             alert.className = `alert alert-${type} alert-dismissible fade show mt-3`;
@@ -1492,6 +1581,8 @@
                     document.getElementById('config-app-host').value = cfg.app.host || '0.0.0.0';
                     document.getElementById('config-app-port').value = cfg.app.port || 5000;
                     document.getElementById('config-app-debug').checked = cfg.app.debug || false;
+                    const confirmPref = cfg.app.confirm_lease_delete !== false;
+                    document.getElementById('config-confirm-lease-delete').checked = confirmPref;
                     
                     document.getElementById('config-log-level').value = cfg.logging.level || 'INFO';
                     
@@ -1531,7 +1622,8 @@
                     app: {
                         host: document.getElementById('config-app-host').value,
                         port: parseInt(document.getElementById('config-app-port').value),
-                        debug: document.getElementById('config-app-debug').checked
+                        debug: document.getElementById('config-app-debug').checked,
+                        confirm_lease_delete: document.getElementById('config-confirm-lease-delete').checked
                     },
                     logging: {
                         level: document.getElementById('config-log-level').value,
@@ -1552,8 +1644,12 @@
                 const data = await response.json();
                 
                 if (data.success) {
+                    // Sync lease delete confirmation preference immediately
+                    confirmLeaseDelete = newConfig.app.confirm_lease_delete;
+                    localStorage.setItem('confirmLeaseDelete', confirmLeaseDelete);
+
                     configModal.hide();
-                    
+
                     // Remove first-start banner if it exists
                     const banner = document.getElementById('first-start-banner');
                     if (banner) {
