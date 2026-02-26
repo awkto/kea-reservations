@@ -4,6 +4,7 @@ Main Flask application
 """
 
 import os
+import secrets
 import logging
 from flask import Flask, render_template, jsonify, request
 import yaml
@@ -183,6 +184,80 @@ if not os.path.exists(config_path):
 
 logger.info(logger_msg)
 
+# Global auth token (loaded or generated at startup)
+AUTH_TOKEN = None
+
+# Lock to prevent multiple Gunicorn workers from simultaneously generating a new token
+AUTH_INIT_LOCK = FileLock("/tmp/kea_auth_init.lock", timeout=30)
+
+
+def save_auth_token_to_config(token):
+    """Write auth token into the config file, preserving all other fields."""
+    try:
+        existing = {}
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                existing = yaml.safe_load(f) or {}
+        existing.setdefault('app', {})['auth_token'] = token
+        with open(config_path, 'w') as f:
+            yaml.dump(existing, f, default_flow_style=False, sort_keys=False)
+        logger.info(f"✅ Auth token written to {config_path}")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not write auth token to config file: {e}")
+
+
+def load_or_generate_auth_token():
+    """Load auth token from config file, or generate and persist a new one.
+
+    Uses a file lock so that when multiple Gunicorn workers start simultaneously,
+    only one generates the token while the others wait and then load it.
+    """
+    global AUTH_TOKEN
+    with AUTH_INIT_LOCK:
+        # Always read directly from the config file inside the lock (bypass cache)
+        # so that a token written by another worker is visible immediately.
+        existing_token = ''
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    file_config = yaml.safe_load(f) or {}
+                existing_token = file_config.get('app', {}).get('auth_token', '')
+            except Exception:
+                pass
+
+        if existing_token:
+            AUTH_TOKEN = existing_token
+            logger.info("🔐 Auth token loaded from config file")
+        else:
+            AUTH_TOKEN = secrets.token_hex(32)
+            save_auth_token_to_config(AUTH_TOKEN)
+            # Invalidate cache so subsequent load_config() picks up the new token
+            _config_cache['mtime'] = 0
+            _config_cache['config'] = None
+            logger.info("=" * 60)
+            logger.info("🔐 NEW AUTH TOKEN GENERATED")
+            logger.info(f"   Token: {AUTH_TOKEN}")
+            logger.info("   Save this token - you will need it to log in.")
+            logger.info("=" * 60)
+
+
+load_or_generate_auth_token()
+
+
+@app.before_request
+def check_auth():
+    """Enforce token authentication on all API routes except /api/login."""
+    # Paths that do not require authentication
+    open_paths = {'/', '/api/login', '/apidocs', '/apispec.json'}
+    if request.path in open_paths or request.path.startswith('/flasgger_static'):
+        return None
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    token = auth_header[len('Bearer '):]
+    if token != AUTH_TOKEN:
+        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+
 
 def get_kea_client():
     """
@@ -259,6 +334,40 @@ def index():
     """Render the main page"""
     version = get_version()
     return render_template('index.html', version=version)
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Authenticate with the application token
+    ---
+    tags:
+      - Auth
+    summary: Authenticate with token
+    description: Validate the provided token against the configured auth token.
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - token
+          properties:
+            token:
+              type: string
+              example: "abc123..."
+    responses:
+      200:
+        description: Authentication successful
+      401:
+        description: Invalid token
+    """
+    data = request.get_json()
+    if not data or not data.get('token'):
+        return jsonify({'success': False, 'error': 'Token required'}), 400
+    if data['token'] == AUTH_TOKEN:
+        return jsonify({'success': True}), 200
+    return jsonify({'success': False, 'error': 'Invalid token'}), 401
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1487,7 +1596,12 @@ def save_config():
         current_config = load_config()
         if new_config['kea'].get('password') == '***' and current_config['kea'].get('password'):
             new_config['kea']['password'] = current_config['kea']['password']
-        
+
+        # Always preserve the auth token - never allow it to be cleared via config save
+        existing_auth_token = current_config.get('app', {}).get('auth_token') or AUTH_TOKEN
+        if existing_auth_token:
+            new_config.setdefault('app', {})['auth_token'] = existing_auth_token
+
         # Write to file
         with open(config_path, 'w') as f:
             yaml.dump(new_config, f, default_flow_style=False, sort_keys=False)

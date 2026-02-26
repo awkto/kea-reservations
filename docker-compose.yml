@@ -7,7 +7,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ./config.yaml:/app/config/config.yaml:ro
+      - ./config.yaml:/app/config/config.yaml
     restart: unless-stopped
     environment:
       - CONFIG_PATH=/app/config/config.yaml

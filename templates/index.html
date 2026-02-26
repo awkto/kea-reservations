@@ -47,9 +47,49 @@
             opacity: 0.8;
             vertical-align: middle;
         }
+        #login-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            background: white;
+            border-radius: 12px;
+            padding: 2.5rem;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
     </style>
 </head>
 <body>
+    <!-- Login Overlay -->
+    <div id="login-overlay">
+        <div class="login-card">
+            <div class="text-center mb-4">
+                <i class="bi bi-shield-lock" style="font-size: 2.5rem; color: #0d6efd;"></i>
+                <h4 class="mt-2 mb-1">KEA DHCP Lease Manager</h4>
+                <p class="text-muted small mb-0">Enter your access token to continue</p>
+            </div>
+            <div class="mb-3">
+                <label for="login-token" class="form-label fw-semibold">Access Token</label>
+                <input type="password" class="form-control form-control-lg" id="login-token"
+                       placeholder="Paste your token here..." autocomplete="current-password">
+            </div>
+            <div id="login-error" class="alert alert-danger py-2 small" style="display:none;"></div>
+            <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">
+                <i class="bi bi-box-arrow-in-right me-2"></i>Login
+            </button>
+            <p class="text-center text-muted small mt-3 mb-0">
+                Token is printed in the application logs on first start.
+            </p>
+        </div>
+    </div>
+
     <!-- Navigation -->
     <nav class="navbar navbar-dark bg-primary mb-4">
         <div class="container-fluid">
@@ -67,6 +107,9 @@
                 </button>
                 <button class="btn btn-outline-light btn-sm" onclick="showConfigModal()">
                     <i class="bi bi-gear"></i> Edit Configuration
+                </button>
+                <button class="btn btn-outline-light btn-sm ms-2" onclick="logout()" title="Logout">
+                    <i class="bi bi-box-arrow-right"></i>
                 </button>
             </div>
         </div>
@@ -700,6 +743,79 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // ── Authentication ────────────────────────────────────────────────────────
+        const AUTH_TOKEN_KEY = 'kea_auth_token';
+
+        function getAuthToken() {
+            return localStorage.getItem(AUTH_TOKEN_KEY);
+        }
+
+        function getAuthHeaders(extra) {
+            const headers = { 'Authorization': 'Bearer ' + (getAuthToken() || '') };
+            return extra ? Object.assign(headers, extra) : headers;
+        }
+
+        async function authFetch(url, options = {}) {
+            options.headers = getAuthHeaders(options.headers);
+            const response = await fetch(url, options);
+            if (response.status === 401) {
+                logout();
+                throw new Error('Session expired. Please log in again.');
+            }
+            return response;
+        }
+
+        async function doLogin() {
+            const tokenInput = document.getElementById('login-token');
+            const errorEl = document.getElementById('login-error');
+            const token = tokenInput.value.trim();
+            if (!token) {
+                errorEl.textContent = 'Please enter a token.';
+                errorEl.style.display = 'block';
+                return;
+            }
+            try {
+                const resp = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    localStorage.setItem(AUTH_TOKEN_KEY, token);
+                    document.getElementById('login-overlay').style.display = 'none';
+                    initApp();
+                } else {
+                    errorEl.textContent = data.error || 'Invalid token.';
+                    errorEl.style.display = 'block';
+                }
+            } catch (err) {
+                errorEl.textContent = 'Login failed: ' + err.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem(AUTH_TOKEN_KEY);
+            document.getElementById('login-token').value = '';
+            document.getElementById('login-error').style.display = 'none';
+            document.getElementById('login-overlay').style.display = 'flex';
+        }
+
+        async function checkExistingAuth() {
+            const token = getAuthToken();
+            if (!token) return false;
+            try {
+                const resp = await fetch('/api/health', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                return resp.status !== 401;
+            } catch {
+                return false;
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
         let allLeases = [];
         let allReservations = [];
         let selectedLease = null;
@@ -742,10 +858,30 @@
                     document.getElementById('kea-config-raw').style.display = 'block';
                 }
             });
-            
+
             // Setup version toggle
             document.getElementById('versionToggle').addEventListener('click', toggleVersion);
-            
+
+            // Allow Enter key on login form
+            document.getElementById('login-token').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') doLogin();
+            });
+
+            // Setup search filter
+            document.getElementById('search-filter').addEventListener('input', filterLeases);
+            document.getElementById('subnet-filter').addEventListener('change', filterLeases);
+
+            // Check for existing valid auth token, then load app
+            checkExistingAuth().then(valid => {
+                if (valid) {
+                    document.getElementById('login-overlay').style.display = 'none';
+                    initApp();
+                }
+                // else: login overlay stays visible
+            });
+        });
+
+        function initApp() {
             // Check health first to detect unconfigured state
             checkHealth().then(healthData => {
                 if (healthData && healthData.status === 'unconfigured') {
@@ -760,11 +896,7 @@
                     });
                 }
             });
-            
-            // Setup search filter
-            document.getElementById('search-filter').addEventListener('input', filterLeases);
-            document.getElementById('subnet-filter').addEventListener('change', filterLeases);
-        });
+        }
 
         function toggleVersion() {
             const versionNumber = document.getElementById('versionNumber');
@@ -777,7 +909,7 @@
 
         async function checkHealth() {
             try {
-                const response = await fetch('/api/health');
+                const response = await authFetch('/api/health');
                 const data = await response.json();
                 
                 const statusEl = document.querySelector('.connection-status');
@@ -810,7 +942,7 @@
 
         async function loadSubnets() {
             try {
-                const response = await fetch('/api/subnets');
+                const response = await authFetch('/api/subnets');
                 const data = await response.json();
                 
                 if (data.success) {
@@ -840,7 +972,7 @@
 
         async function loadReservations() {
             try {
-                const response = await fetch('/api/reservations');
+                const response = await authFetch('/api/reservations');
                 const data = await response.json();
                 
                 if (data.success) {
@@ -862,7 +994,7 @@
             tableContainer.style.display = 'none';
             
             try {
-                const response = await fetch('/api/leases');
+                const response = await authFetch('/api/leases');
                 const data = await response.json();
                 
                 if (data.success) {
@@ -1084,7 +1216,7 @@
             
             // Validate IP is in subnet range
             try {
-                const validateResponse = await fetch('/api/validate-ip', {
+                const validateResponse = await authFetch('/api/validate-ip', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1149,7 +1281,7 @@
             if (ipAddress !== originalIP) {
                 // Validate subnet
                 try {
-                    const validateResponse = await fetch('/api/validate-ip', {
+                    const validateResponse = await authFetch('/api/validate-ip', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
@@ -1181,7 +1313,7 @@
             }
             
             try {
-                const response = await fetch('/api/promote', {
+                const response = await authFetch('/api/promote', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1302,7 +1434,7 @@
             }
 
             try {
-                const response = await fetch('/api/reservations', {
+                const response = await authFetch('/api/reservations', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1371,12 +1503,12 @@
                     deleteUrl += `?subnet_id=${oldSubnetId}`;
                 }
 
-                await fetch(deleteUrl, {
+                await authFetch(deleteUrl, {
                     method: 'DELETE'
                 });
 
                 // Create new reservation with updated values
-                const response = await fetch('/api/reservations', {
+                const response = await authFetch('/api/reservations', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1436,8 +1568,8 @@
                 if (subnetId) {
                     url += `?subnet_id=${subnetId}`;
                 }
-                
-                const response = await fetch(url, {
+
+                const response = await authFetch(url, {
                     method: 'DELETE'
                 });
                 
@@ -1488,7 +1620,7 @@
 
         async function performDeleteLease(ipAddress) {
             try {
-                const response = await fetch(`/api/leases/ip/${encodeURIComponent(ipAddress)}`, {
+                const response = await authFetch(`/api/leases/ip/${encodeURIComponent(ipAddress)}`, {
                     method: 'DELETE'
                 });
                 const data = await response.json();
@@ -1566,9 +1698,9 @@
             document.getElementById('config-form').style.display = 'none';
             
             try {
-                const response = await fetch('/api/config');
+                const response = await authFetch('/api/config');
                 const data = await response.json();
-                
+
                 if (data.success) {
                     const cfg = data.config;
                     
@@ -1631,7 +1763,7 @@
                     }
                 };
                 
-                const response = await fetch('/api/config', {
+                const response = await authFetch('/api/config', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1685,16 +1817,23 @@
             try {
                 const subnetFilter = document.getElementById('subnet-filter').value;
                 let url = '/api/reservations/export';
-                
+
                 if (subnetFilter) {
                     url += `?subnet_id=${subnetFilter}`;
                 }
-                
-                // Trigger file download
-                window.location.href = url;
-                
-                // Show success message in the modal
-                showAlertInModal('success', 'Reservations export started. Check your downloads folder.');
+
+                const response = await authFetch(url);
+                if (!response || !response.ok) throw new Error('Export request failed');
+                const blob = await response.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'dhcp_reservations_export.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(a.href);
+
+                showAlertInModal('success', 'Reservations exported successfully.');
             } catch (error) {
                 console.error('Export failed:', error);
                 showAlertInModal('danger', `Error exporting reservations: ${error.message}`);
@@ -1732,7 +1871,7 @@
                 const formData = new FormData();
                 formData.append('file', file);
                 
-                const response = await fetch('/api/reservations/import', {
+                const response = await authFetch('/api/reservations/import', {
                     method: 'POST',
                     body: formData
                 });
@@ -1890,7 +2029,7 @@
             document.getElementById('viewRaw').disabled = false;
 
             try {
-                const response = await fetch('/api/kea-config');
+                const response = await authFetch('/api/kea-config');
                 const data = await response.json();
 
                 if (data.success) {
