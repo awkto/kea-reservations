@@ -43,5 +43,6 @@ Thumbs.db
 .env
 .env.local
 
-# Config (if contains sensitive data)
+# Config (contains sensitive data — use config.yaml.template as a starting point)
 config.yaml
+config/*.yaml

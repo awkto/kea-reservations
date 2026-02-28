@@ -544,8 +544,13 @@ def first_run_setup():
         app_section['api_token'] = legacy
     app_section.pop('auth_token', None)
 
-    with open(config_path, 'w') as f:
-        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(config_path)), exist_ok=True)
+        with open(config_path, 'w') as f:
+            yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        logger.error(f"❌ Failed to write config during setup: {e}")
+        return jsonify({'success': False, 'error': f'Could not write config file: {e}'}), 500
 
     AUTH_TOKEN = app_section['api_token']
     _config_cache['mtime'] = 0
@@ -583,8 +588,12 @@ def regenerate_api_token():
     app_section['api_token'] = new_token
     app_section.pop('auth_token', None)
 
-    with open(config_path, 'w') as f:
-        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    try:
+        with open(config_path, 'w') as f:
+            yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        logger.error(f"❌ Failed to write config during token regeneration: {e}")
+        return jsonify({'success': False, 'error': f'Could not write config file: {e}'}), 500
 
     AUTH_TOKEN = new_token
     _config_cache['mtime'] = 0
