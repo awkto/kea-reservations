@@ -173,7 +173,7 @@
                 <span id="lease-count" class="badge bg-secondary">0</span>
             </h4>
             
-            <div id="loading" class="text-center py-5">
+            <div id="loading" class="text-center py-5" style="display:none;">
                 <div class="spinner-border text-primary" role="status">
                     <span class="visually-hidden">Loading...</span>
                 </div>
@@ -1018,6 +1018,7 @@
                 showUnconfiguredState();
                 return;
             }
+            document.getElementById('loading').style.display = 'block';
             loadSubnets();
             loadReservations().then(() => {
                 loadLeases();
