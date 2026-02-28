@@ -278,6 +278,29 @@ def load_or_init_auth():
 load_or_init_auth()
 
 
+def init_config_file():
+    """Create a default config.yaml if it doesn't exist yet.
+
+    Called at startup so the config directory always contains a config file
+    after the first boot. Subsequent startups are a no-op.
+    """
+    if os.path.exists(config_path):
+        return
+    parent = os.path.dirname(os.path.abspath(config_path))
+    if not os.path.isdir(parent):
+        logger.warning(f"⚠️  Config directory {parent} not found — config will be in-memory only")
+        return
+    try:
+        with open(config_path, 'w') as f:
+            yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, sort_keys=False)
+        logger.info(f"✅ Created default config file at {config_path}")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not create config file: {e}")
+
+
+init_config_file()
+
+
 @app.before_request
 def check_auth():
     """Enforce authentication on all API routes.
@@ -545,7 +568,6 @@ def first_run_setup():
     app_section.pop('auth_token', None)
 
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(config_path)), exist_ok=True)
         with open(config_path, 'w') as f:
             yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
     except Exception as e:

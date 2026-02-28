@@ -9,8 +9,6 @@ services:
     volumes:
       - ./config:/app/config
     restart: unless-stopped
-    environment:
-      - CONFIG_PATH=/app/config/config.yaml
     networks:
       - kea-network
 
