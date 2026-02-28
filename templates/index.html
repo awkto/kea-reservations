@@ -1004,7 +1004,20 @@
             }
         }
 
-        function initApp() {
+        function showUnconfiguredState() {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('leases-table-container').style.display = 'none';
+            document.getElementById('error-text').textContent = 'KEA server not configured. Click "Edit Configuration" to set up your KEA connection.';
+            document.getElementById('setup-help').style.display = 'none';
+            document.getElementById('error-message').style.display = 'block';
+        }
+
+        async function initApp() {
+            const health = await checkHealth();
+            if (!health || health.status === 'unconfigured') {
+                showUnconfiguredState();
+                return;
+            }
             loadSubnets();
             loadReservations().then(() => {
                 loadLeases();
@@ -1938,11 +1951,15 @@
             }
         }
 
-        function refreshData() {
+        async function refreshData() {
+            const health = await checkHealth();
+            if (!health || health.status === 'unconfigured') {
+                showUnconfiguredState();
+                return;
+            }
             loadReservations().then(() => {
                 loadLeases();
             });
-            checkHealth();
         }
 
         // Export reservations to JSON file
