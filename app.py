@@ -5,6 +5,9 @@ Main Flask application
 
 import os
 import secrets
+import hashlib
+import hmac
+import time
 import logging
 from flask import Flask, render_template, jsonify, request
 import yaml
@@ -184,79 +187,116 @@ if not os.path.exists(config_path):
 
 logger.info(logger_msg)
 
-# Global auth token (loaded or generated at startup)
+# Long-lived API token for programmatic/script access (loaded from config)
 AUTH_TOKEN = None
+
+# Short-lived web session store: {session_token: expiry_timestamp}
+# In-memory — sessions do not survive a server restart.
+SESSIONS = {}
+SESSION_TTL = 12 * 60 * 60  # 12 hours
+
+
+def create_session() -> str:
+    """Generate a new session token valid for SESSION_TTL seconds."""
+    token = 'sess_' + secrets.token_hex(32)
+    SESSIONS[token] = time.time() + SESSION_TTL
+    return token
+
+
+def is_valid_session(token: str) -> bool:
+    """Return True if the token is a known, unexpired session."""
+    expiry = SESSIONS.get(token)
+    if expiry is None:
+        return False
+    if time.time() > expiry:
+        SESSIONS.pop(token, None)
+        return False
+    return True
+
+
+def revoke_session(token: str) -> None:
+    """Remove a session token, if present."""
+    SESSIONS.pop(token, None)
+
 
 # Lock to prevent multiple Gunicorn workers from simultaneously generating a new token
 AUTH_INIT_LOCK = FileLock("/tmp/kea_auth_init.lock", timeout=30)
 
 
-def save_auth_token_to_config(token):
-    """Write auth token into the config file, preserving all other fields."""
+def hash_password(password: str) -> str:
+    """Hash a password using PBKDF2-HMAC-SHA256 with a random salt."""
+    salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 260000)
+    return f"pbkdf2:sha256:{salt}:{key.hex()}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored PBKDF2 hash. Timing-safe comparison."""
     try:
-        existing = {}
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                existing = yaml.safe_load(f) or {}
-        existing.setdefault('app', {})['auth_token'] = token
-        with open(config_path, 'w') as f:
-            yaml.dump(existing, f, default_flow_style=False, sort_keys=False)
-        logger.info(f"✅ Auth token written to {config_path}")
-    except Exception as e:
-        logger.warning(f"⚠️  Could not write auth token to config file: {e}")
+        parts = stored_hash.split(':', 3)
+        if len(parts) != 4 or parts[0] != 'pbkdf2' or parts[1] != 'sha256':
+            return False
+        _, _, salt, key_hex = parts
+        key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 260000)
+        return hmac.compare_digest(key.hex(), key_hex)
+    except Exception:
+        return False
 
 
-def load_or_generate_auth_token():
-    """Load auth token from config file, or generate and persist a new one.
+def load_or_init_auth():
+    """Load or initialize authentication state on startup.
 
-    Uses a file lock so that when multiple Gunicorn workers start simultaneously,
-    only one generates the token while the others wait and then load it.
+    Loads the API token from config (api_token field). Falls back to the legacy
+    auth_token field for migration from older versions. If neither exists,
+    generates a token in memory only — it is persisted when first-run setup completes.
     """
     global AUTH_TOKEN
     with AUTH_INIT_LOCK:
-        # Always read directly from the config file inside the lock (bypass cache)
-        # so that a token written by another worker is visible immediately.
-        existing_token = ''
+        file_config = {}
         if os.path.exists(config_path):
             try:
                 with open(config_path, 'r') as f:
                     file_config = yaml.safe_load(f) or {}
-                existing_token = file_config.get('app', {}).get('auth_token', '')
             except Exception:
                 pass
 
-        if existing_token:
-            AUTH_TOKEN = existing_token
-            logger.info("🔐 Auth token loaded from config file")
+        app_cfg = file_config.get('app', {})
+        # Prefer new api_token field; fall back to legacy auth_token for migration
+        api_token = app_cfg.get('api_token', '') or app_cfg.get('auth_token', '')
+
+        if api_token:
+            AUTH_TOKEN = api_token
+            logger.info("🔐 API token loaded from config")
         else:
             AUTH_TOKEN = secrets.token_hex(32)
-            save_auth_token_to_config(AUTH_TOKEN)
-            # Invalidate cache so subsequent load_config() picks up the new token
-            _config_cache['mtime'] = 0
-            _config_cache['config'] = None
-            logger.info("=" * 60)
-            logger.info("🔐 NEW AUTH TOKEN GENERATED")
-            logger.info(f"   Token: {AUTH_TOKEN}")
-            logger.info("   Save this token - you will need it to log in.")
-            logger.info("=" * 60)
+            logger.info("🔐 API token generated in memory — complete first-run setup to persist")
+
+        if not app_cfg.get('password_hash'):
+            logger.info("⚙️  First-run setup required: open the web UI to set a password")
 
 
-load_or_generate_auth_token()
+load_or_init_auth()
 
 
 @app.before_request
 def check_auth():
-    """Enforce token authentication on all API routes except /api/login."""
-    # Paths that do not require authentication
-    open_paths = {'/', '/api/login', '/apidocs', '/apispec.json'}
+    """Enforce authentication on all API routes.
+
+    Accepts either:
+      - A valid (unexpired) web session token issued by /api/login or /api/setup
+      - The long-lived API token stored in config (for scripts/integrations)
+    """
+    open_paths = {'/', '/api/login', '/api/logout', '/api/first-run', '/api/setup',
+                  '/apidocs', '/apispec.json'}
     if request.path in open_paths or request.path.startswith('/flasgger_static'):
         return None
     auth_header = request.headers.get('Authorization', '')
     if not auth_header.startswith('Bearer '):
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     token = auth_header[len('Bearer '):]
-    if token != AUTH_TOKEN:
-        return jsonify({'success': False, 'error': 'Invalid token'}), 401
+    if is_valid_session(token) or token == AUTH_TOKEN:
+        return None
+    return jsonify({'success': False, 'error': 'Invalid or expired token'}), 401
 
 
 def get_kea_client():
@@ -338,12 +378,12 @@ def index():
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    """Authenticate with the application token
+    """Authenticate with admin password
     ---
     tags:
       - Auth
-    summary: Authenticate with token
-    description: Validate the provided token against the configured auth token.
+    summary: Authenticate with password
+    description: Verify the admin password. On success, returns the API token to use as a Bearer token for all subsequent requests.
     parameters:
       - name: body
         in: body
@@ -351,23 +391,207 @@ def login():
         schema:
           type: object
           required:
-            - token
+            - password
           properties:
-            token:
+            password:
               type: string
-              example: "abc123..."
+              example: "mysecretpassword"
     responses:
       200:
-        description: Authentication successful
+        description: Authentication successful — returns a short-lived session token
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            session_token:
+              type: string
+            expires_in:
+              type: integer
+              description: Session lifetime in seconds
       401:
-        description: Invalid token
+        description: Invalid password
+      403:
+        description: No password configured — complete first-run setup first
     """
     data = request.get_json()
-    if not data or not data.get('token'):
-        return jsonify({'success': False, 'error': 'Token required'}), 400
-    if data['token'] == AUTH_TOKEN:
-        return jsonify({'success': True}), 200
-    return jsonify({'success': False, 'error': 'Invalid token'}), 401
+    if not data or not data.get('password'):
+        return jsonify({'success': False, 'error': 'Password required'}), 400
+
+    current_config = load_config()
+    password_hash = current_config.get('app', {}).get('password_hash', '')
+    if not password_hash:
+        return jsonify({'success': False, 'error': 'No password configured. Complete first-run setup.'}), 403
+
+    if not verify_password(data['password'], password_hash):
+        return jsonify({'success': False, 'error': 'Invalid password'}), 401
+
+    session_token = create_session()
+    return jsonify({'success': True, 'session_token': session_token, 'expires_in': SESSION_TTL}), 200
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    """Revoke the current web session
+    ---
+    tags:
+      - Auth
+    summary: Logout
+    description: Revokes the session token supplied in the Authorization header. Safe to call even if the session has already expired.
+    responses:
+      200:
+        description: Session revoked (or was already invalid)
+    """
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.startswith('Bearer '):
+        revoke_session(auth_header[len('Bearer '):])
+    return jsonify({'success': True}), 200
+
+
+@app.route('/api/first-run', methods=['GET'])
+def first_run_status():
+    """Check if first-run password setup is required
+    ---
+    tags:
+      - Auth
+    summary: First-run status
+    description: Returns whether the admin password has been configured. Used by the frontend to decide whether to show the setup wizard or the login form.
+    responses:
+      200:
+        description: First-run status
+        schema:
+          type: object
+          properties:
+            first_run:
+              type: boolean
+              description: True if no password has been set yet
+    """
+    file_config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                file_config = yaml.safe_load(f) or {}
+        except Exception:
+            pass
+    has_password = bool(file_config.get('app', {}).get('password_hash', ''))
+    return jsonify({'first_run': not has_password}), 200
+
+
+@app.route('/api/setup', methods=['POST'])
+def first_run_setup():
+    """Complete first-run setup by setting the admin password
+    ---
+    tags:
+      - Auth
+    summary: First-run setup
+    description: Sets the initial admin password. Only available when no password has been configured yet. Returns the API token to use for all subsequent requests.
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - password
+          properties:
+            password:
+              type: string
+              minLength: 8
+              example: "mysecretpassword"
+    responses:
+      200:
+        description: Setup completed
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            api_token:
+              type: string
+      400:
+        description: Password too short or missing
+      403:
+        description: Setup already completed
+    """
+    file_config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                file_config = yaml.safe_load(f) or {}
+        except Exception:
+            pass
+
+    if file_config.get('app', {}).get('password_hash'):
+        return jsonify({'success': False, 'error': 'Setup already completed'}), 403
+
+    data = request.get_json()
+    password = (data or {}).get('password', '').strip()
+
+    if not password or len(password) < 8:
+        return jsonify({'success': False, 'error': 'Password must be at least 8 characters'}), 400
+
+    global AUTH_TOKEN
+
+    pw_hash = hash_password(password)
+
+    current_config = load_config()
+    app_section = current_config.setdefault('app', {})
+    app_section['password_hash'] = pw_hash
+
+    # Persist the API token (migrate from legacy auth_token if present)
+    if not app_section.get('api_token'):
+        legacy = app_section.pop('auth_token', None) or AUTH_TOKEN
+        app_section['api_token'] = legacy
+    app_section.pop('auth_token', None)
+
+    with open(config_path, 'w') as f:
+        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+
+    AUTH_TOKEN = app_section['api_token']
+    _config_cache['mtime'] = 0
+    _config_cache['config'] = None
+
+    logger.info("✅ First-run setup completed: admin password configured")
+    session_token = create_session()
+    return jsonify({'success': True, 'session_token': session_token, 'expires_in': SESSION_TTL}), 200
+
+
+@app.route('/api/auth/token/regenerate', methods=['POST'])
+def regenerate_api_token():
+    """Regenerate the API token
+    ---
+    tags:
+      - Auth
+    summary: Regenerate API token
+    description: Generates a new random API token and saves it. All existing sessions using the old token are invalidated. The frontend automatically updates its stored token.
+    responses:
+      200:
+        description: New token generated
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            api_token:
+              type: string
+    """
+    global AUTH_TOKEN
+    new_token = secrets.token_hex(32)
+
+    current_config = load_config()
+    app_section = current_config.setdefault('app', {})
+    app_section['api_token'] = new_token
+    app_section.pop('auth_token', None)
+
+    with open(config_path, 'w') as f:
+        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+
+    AUTH_TOKEN = new_token
+    _config_cache['mtime'] = 0
+    _config_cache['config'] = None
+
+    logger.info("🔄 API token regenerated")
+    return jsonify({'success': True, 'api_token': new_token}), 200
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1316,7 +1540,14 @@ def get_config():
         
         if 'kea' in sanitized_config and 'password' in sanitized_config['kea']:
             sanitized_config['kea']['password'] = '***' if sanitized_config['kea']['password'] else ''
-        
+
+        # Strip sensitive auth fields; expose api_token for the settings UI
+        if 'app' in sanitized_config:
+            sanitized_config['app'].pop('password_hash', None)
+            sanitized_config['app'].pop('auth_token', None)
+            if 'api_token' not in sanitized_config['app']:
+                sanitized_config['app']['api_token'] = AUTH_TOKEN
+
         return jsonify({
             'success': True,
             'config': sanitized_config,
@@ -1597,10 +1828,13 @@ def save_config():
         if new_config['kea'].get('password') == '***' and current_config['kea'].get('password'):
             new_config['kea']['password'] = current_config['kea']['password']
 
-        # Always preserve the auth token - never allow it to be cleared via config save
-        existing_auth_token = current_config.get('app', {}).get('auth_token') or AUTH_TOKEN
-        if existing_auth_token:
-            new_config.setdefault('app', {})['auth_token'] = existing_auth_token
+        # Always preserve auth credentials — never allow clearing via config save
+        existing_app = current_config.get('app', {})
+        new_app = new_config.setdefault('app', {})
+        new_app['api_token'] = existing_app.get('api_token') or AUTH_TOKEN
+        if existing_app.get('password_hash'):
+            new_app['password_hash'] = existing_app['password_hash']
+        new_app.pop('auth_token', None)  # Remove legacy field
 
         # Write to file
         with open(config_path, 'w') as f:

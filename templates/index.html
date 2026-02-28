@@ -73,19 +73,44 @@
             <div class="text-center mb-4">
                 <i class="bi bi-shield-lock" style="font-size: 2.5rem; color: #0d6efd;"></i>
                 <h4 class="mt-2 mb-1">KEA DHCP Lease Manager</h4>
-                <p class="text-muted small mb-0">Enter your access token to continue</p>
+                <p class="text-muted small mb-0">Enter your admin password to continue</p>
             </div>
             <div class="mb-3">
-                <label for="login-token" class="form-label fw-semibold">Access Token</label>
-                <input type="password" class="form-control form-control-lg" id="login-token"
-                       placeholder="Paste your token here..." autocomplete="current-password">
+                <label for="login-password" class="form-label fw-semibold">Password</label>
+                <input type="password" class="form-control form-control-lg" id="login-password"
+                       placeholder="Enter your password..." autocomplete="current-password">
             </div>
             <div id="login-error" class="alert alert-danger py-2 small" style="display:none;"></div>
             <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">
                 <i class="bi bi-box-arrow-in-right me-2"></i>Login
             </button>
+        </div>
+    </div>
+
+    <!-- First-Run Setup Overlay -->
+    <div id="setup-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background: linear-gradient(135deg, #198754 0%, #146c43 100%); z-index: 10000; align-items:center; justify-content:center;">
+        <div class="login-card" style="max-width: 460px;">
+            <div class="text-center mb-4">
+                <i class="bi bi-shield-check" style="font-size: 2.5rem; color: #198754;"></i>
+                <h4 class="mt-2 mb-1">Welcome — First-Time Setup</h4>
+                <p class="text-muted small mb-0">Create an admin password to secure this instance</p>
+            </div>
+            <div class="mb-3">
+                <label for="setup-password" class="form-label fw-semibold">Password <span class="text-muted fw-normal">(min. 8 characters)</span></label>
+                <input type="password" class="form-control form-control-lg" id="setup-password"
+                       placeholder="Choose a password..." autocomplete="new-password">
+            </div>
+            <div class="mb-4">
+                <label for="setup-password-confirm" class="form-label fw-semibold">Confirm Password</label>
+                <input type="password" class="form-control form-control-lg" id="setup-password-confirm"
+                       placeholder="Repeat password..." autocomplete="new-password">
+            </div>
+            <div id="setup-error" class="alert alert-danger py-2 small" style="display:none;"></div>
+            <button class="btn btn-success btn-lg w-100" onclick="doSetup()" id="setup-btn">
+                <i class="bi bi-check-circle me-2"></i>Complete Setup &amp; Log In
+            </button>
             <p class="text-center text-muted small mt-3 mb-0">
-                Token is printed in the application logs on first start.
+                An API token is automatically generated for programmatic access.
             </p>
         </div>
     </div>
@@ -566,7 +591,7 @@
                         </div>
 
                         <h6 class="border-bottom pb-2 mb-3 mt-4">Logging Settings</h6>
-                        
+
                         <div class="mb-3">
                             <label for="config-log-level" class="form-label">Log Level</label>
                             <select class="form-select" id="config-log-level">
@@ -576,6 +601,26 @@
                                 <option value="ERROR">ERROR</option>
                             </select>
                         </div>
+
+                        <h6 class="border-bottom pb-2 mb-3 mt-4">API Access</h6>
+
+                        <div class="mb-3">
+                            <label class="form-label">API Token</label>
+                            <div class="input-group">
+                                <input type="password" class="form-control font-monospace" id="config-api-token" readonly>
+                                <button class="btn btn-outline-secondary" type="button" onclick="toggleApiTokenVisibility()" id="api-token-toggle-btn" title="Show/hide token">
+                                    <i class="bi bi-eye" id="api-token-eye-icon"></i>
+                                </button>
+                                <button class="btn btn-outline-secondary" type="button" onclick="copyApiToken()" title="Copy to clipboard">
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
+                            </div>
+                            <div class="form-text">Use this token as a Bearer token for programmatic API access.</div>
+                        </div>
+                        <button class="btn btn-outline-danger btn-sm" type="button" onclick="regenerateApiToken()">
+                            <i class="bi bi-arrow-repeat me-1"></i>Regenerate API Token
+                        </button>
+                        <div class="form-text mt-1">Regenerating invalidates all existing API sessions.</div>
                     </form>
                 </div>
                 <div class="modal-footer">
@@ -766,11 +811,11 @@
         }
 
         async function doLogin() {
-            const tokenInput = document.getElementById('login-token');
+            const passwordInput = document.getElementById('login-password');
             const errorEl = document.getElementById('login-error');
-            const token = tokenInput.value.trim();
-            if (!token) {
-                errorEl.textContent = 'Please enter a token.';
+            const password = passwordInput.value;
+            if (!password) {
+                errorEl.textContent = 'Please enter your password.';
                 errorEl.style.display = 'block';
                 return;
             }
@@ -778,15 +823,15 @@
                 const resp = await fetch('/api/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ token })
+                    body: JSON.stringify({ password })
                 });
                 const data = await resp.json();
                 if (data.success) {
-                    localStorage.setItem(AUTH_TOKEN_KEY, token);
+                    localStorage.setItem(AUTH_TOKEN_KEY, data.session_token);
                     document.getElementById('login-overlay').style.display = 'none';
                     initApp();
                 } else {
-                    errorEl.textContent = data.error || 'Invalid token.';
+                    errorEl.textContent = data.error || 'Invalid password.';
                     errorEl.style.display = 'block';
                 }
             } catch (err) {
@@ -796,8 +841,16 @@
         }
 
         function logout() {
+            // Revoke session server-side (fire-and-forget)
+            const token = getAuthToken();
+            if (token) {
+                fetch('/api/logout', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                }).catch(() => {});
+            }
             localStorage.removeItem(AUTH_TOKEN_KEY);
-            document.getElementById('login-token').value = '';
+            document.getElementById('login-password').value = '';
             document.getElementById('login-error').style.display = 'none';
             document.getElementById('login-overlay').style.display = 'flex';
         }
@@ -863,38 +916,98 @@
             document.getElementById('versionToggle').addEventListener('click', toggleVersion);
 
             // Allow Enter key on login form
-            document.getElementById('login-token').addEventListener('keydown', function(e) {
+            document.getElementById('login-password').addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') doLogin();
+            });
+
+            // Allow Enter key on setup form (confirm field)
+            document.getElementById('setup-password-confirm').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') doSetup();
             });
 
             // Setup search filter
             document.getElementById('search-filter').addEventListener('input', filterLeases);
             document.getElementById('subnet-filter').addEventListener('change', filterLeases);
 
-            // Check for existing valid auth token, then load app
-            checkExistingAuth().then(valid => {
-                if (valid) {
+            // Check first-run status, then auth, then load app
+            checkFirstRun().then(isFirstRun => {
+                if (isFirstRun) {
                     document.getElementById('login-overlay').style.display = 'none';
-                    initApp();
+                    const overlay = document.getElementById('setup-overlay');
+                    overlay.style.display = 'flex';
+                } else {
+                    checkExistingAuth().then(valid => {
+                        if (valid) {
+                            document.getElementById('login-overlay').style.display = 'none';
+                            initApp();
+                        }
+                        // else: login overlay stays visible
+                    });
                 }
-                // else: login overlay stays visible
             });
         });
 
-        function initApp() {
-            // Check health first to detect unconfigured state
-            checkHealth().then(healthData => {
-                if (healthData && healthData.status === 'unconfigured') {
-                    // Show config modal immediately for first-start
-                    showFirstStartBanner();
-                    setTimeout(() => showConfigModal(), 500);
+        async function checkFirstRun() {
+            try {
+                const resp = await fetch('/api/first-run');
+                const data = await resp.json();
+                return data.first_run === true;
+            } catch {
+                return false;
+            }
+        }
+
+        async function doSetup() {
+            const password = document.getElementById('setup-password').value;
+            const confirm = document.getElementById('setup-password-confirm').value;
+            const errorEl = document.getElementById('setup-error');
+            const btn = document.getElementById('setup-btn');
+
+            errorEl.style.display = 'none';
+
+            if (!password || password.length < 8) {
+                errorEl.textContent = 'Password must be at least 8 characters.';
+                errorEl.style.display = 'block';
+                return;
+            }
+            if (password !== confirm) {
+                errorEl.textContent = 'Passwords do not match.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Setting up...';
+
+            try {
+                const resp = await fetch('/api/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    localStorage.setItem(AUTH_TOKEN_KEY, data.session_token);
+                    document.getElementById('setup-overlay').style.display = 'none';
+                    initApp();
                 } else {
-                    // Normal startup - load data
-                    loadSubnets();
-                    loadReservations().then(() => {
-                        loadLeases();
-                    });
+                    errorEl.textContent = data.error || 'Setup failed.';
+                    errorEl.style.display = 'block';
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-check-circle me-2"></i>Complete Setup &amp; Log In';
                 }
+            } catch (err) {
+                errorEl.textContent = 'Setup failed: ' + err.message;
+                errorEl.style.display = 'block';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-check-circle me-2"></i>Complete Setup &amp; Log In';
+            }
+        }
+
+        function initApp() {
+            loadSubnets();
+            loadReservations().then(() => {
+                loadLeases();
             });
         }
 
@@ -1673,24 +1786,6 @@
             }, 5000);
         }
 
-        function showFirstStartBanner() {
-            const banner = document.createElement('div');
-            banner.id = 'first-start-banner';
-            banner.className = 'alert alert-warning alert-dismissible fade show';
-            banner.style.marginBottom = '0';
-            banner.innerHTML = `
-                <div class="container-fluid">
-                    <h5><i class="bi bi-exclamation-triangle-fill"></i> First-Time Setup Required</h5>
-                    <p class="mb-2">Welcome! Your KEA DHCP Lease Manager needs to be configured before use.</p>
-                    <p class="mb-0">Please configure your KEA server connection in the configuration dialog.</p>
-                </div>
-            `;
-            
-            // Insert after navbar
-            const navbar = document.querySelector('.navbar');
-            navbar.insertAdjacentElement('afterend', banner);
-        }
-
         async function showConfigModal() {
             configModal.show();
             
@@ -1717,7 +1812,13 @@
                     document.getElementById('config-confirm-lease-delete').checked = confirmPref;
                     
                     document.getElementById('config-log-level').value = cfg.logging.level || 'INFO';
-                    
+
+                    // Populate API token field
+                    document.getElementById('config-api-token').value = cfg.app.api_token || '';
+                    // Reset visibility to hidden when modal opens
+                    document.getElementById('config-api-token').type = 'password';
+                    document.getElementById('api-token-eye-icon').className = 'bi bi-eye';
+
                     // Show config file status
                     const statusEl = document.getElementById('config-file-status');
                     if (data.config_exists) {
@@ -1735,6 +1836,45 @@
                 console.error('Failed to load config:', error);
                 alert('Failed to load configuration: ' + error.message);
                 configModal.hide();
+            }
+        }
+
+        function toggleApiTokenVisibility() {
+            const input = document.getElementById('config-api-token');
+            const icon = document.getElementById('api-token-eye-icon');
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.className = 'bi bi-eye-slash';
+            } else {
+                input.type = 'password';
+                icon.className = 'bi bi-eye';
+            }
+        }
+
+        async function copyApiToken() {
+            const token = document.getElementById('config-api-token').value;
+            try {
+                await navigator.clipboard.writeText(token);
+                showAlert('success', 'API token copied to clipboard.');
+            } catch {
+                showAlert('warning', 'Could not copy to clipboard.');
+            }
+        }
+
+        async function regenerateApiToken() {
+            if (!confirm('Regenerate the API token? All existing API sessions will be invalidated and you will be logged out.')) return;
+            try {
+                const resp = await authFetch('/api/auth/token/regenerate', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    localStorage.setItem(AUTH_TOKEN_KEY, data.api_token);
+                    document.getElementById('config-api-token').value = data.api_token;
+                    showAlert('success', 'API token regenerated. Your session has been updated.');
+                } else {
+                    showAlert('danger', 'Failed to regenerate token: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                showAlert('danger', 'Error: ' + err.message);
             }
         }
 
@@ -1781,13 +1921,6 @@
                     localStorage.setItem('confirmLeaseDelete', confirmLeaseDelete);
 
                     configModal.hide();
-
-                    // Remove first-start banner if it exists
-                    const banner = document.getElementById('first-start-banner');
-                    if (banner) {
-                        banner.remove();
-                    }
-                    
                     showAlert('success', data.message + ' Reloading page...');
                     
                     // Reload the page after a short delay to apply new configuration

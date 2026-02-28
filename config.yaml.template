@@ -2,11 +2,11 @@
 kea:
   # KEA Control Agent URL (default port is 8000)
   control_agent_url: "http://localhost:8000"
-  
+
   # Optional: Basic authentication for KEA Control Agent
   username: ""
   password: ""
-  
+
   # Subnet ID for DHCPv4 (you can make this configurable per request)
   default_subnet_id: 1
 
@@ -15,11 +15,11 @@ app:
   host: "0.0.0.0"
   port: 5000
   debug: false
-  # Authentication token for the web interface.
-  # Leave blank to auto-generate a token on first start (printed in logs).
-  # Set a value here to use a fixed token across restarts.
-  auth_token: ""
-  
+  # Admin password hash (PBKDF2-SHA256). Set via the first-run web UI setup wizard.
+  # password_hash: ""
+  # API token for programmatic access. Auto-generated on first-run setup.
+  # api_token: ""
+
 # Logging
 logging:
   level: "INFO"
