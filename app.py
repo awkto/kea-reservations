@@ -317,7 +317,12 @@ def check_auth():
     if not auth_header.startswith('Bearer '):
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     token = auth_header[len('Bearer '):]
-    if is_valid_session(token) or token == AUTH_TOKEN:
+    if is_valid_session(token):
+        return None
+    # Check api_token from config (authoritative) so it stays correct
+    # after worker restarts or if in-memory AUTH_TOKEN is stale.
+    api_token = load_config().get('app', {}).get('api_token') or AUTH_TOKEN
+    if token == api_token:
         return None
     return jsonify({'success': False, 'error': 'Invalid or expired token'}), 401
 
