@@ -403,9 +403,9 @@
                     <form id="edit-reservation-form">
                         <div class="mb-3">
                             <label for="edit-ip-address" class="form-label">IP Address *</label>
-                            <input type="text" class="form-control" id="edit-ip-address" 
-                                   placeholder="192.168.1.100" required readonly>
-                            <div class="form-text">IP address cannot be changed. Delete and recreate to change IP.</div>
+                            <input type="text" class="form-control" id="edit-ip-address"
+                                   placeholder="192.168.1.100" required>
+                            <div class="form-text">Changing the IP will delete the old reservation and create a new one. The old lease will remain until expiry or manual deletion.</div>
                         </div>
                         <div class="mb-3">
                             <label for="edit-hw-address" class="form-label">MAC Address *</label>
