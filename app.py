@@ -128,8 +128,8 @@ def load_config():
     """
     global config, _config_cache
     
-    # Check if file exists and get modification time
-    if os.path.exists(config_path):
+    # Check if file exists (as a regular file) and get modification time
+    if os.path.isfile(config_path):
         current_mtime = os.path.getmtime(config_path)
         
         # Return cached config if file hasn't changed
@@ -284,7 +284,16 @@ def init_config_file():
     Called at startup so the config directory always contains a config file
     after the first boot. Subsequent startups are a no-op.
     """
-    if os.path.exists(config_path):
+    # Guard against config_path being a directory (can happen with Docker
+    # volume mounts when the host path doesn't pre-exist as a file).
+    if os.path.isdir(config_path):
+        logger.warning(f"⚠️  {config_path} is a directory — removing so it can be created as a file")
+        try:
+            os.rmdir(config_path)
+        except OSError as e:
+            logger.error(f"❌ Could not remove directory {config_path}: {e}")
+            return
+    if os.path.isfile(config_path):
         return
     parent = os.path.dirname(os.path.abspath(config_path))
     if not os.path.isdir(parent):
@@ -628,6 +637,89 @@ def regenerate_api_token():
 
     logger.info("🔄 API token regenerated")
     return jsonify({'success': True, 'api_token': new_token}), 200
+
+
+@app.route('/api/auth/change-password', methods=['POST'])
+def change_password():
+    """Change the admin password
+    ---
+    tags:
+      - Auth
+    summary: Change admin password
+    description: Changes the admin password. Requires the current password for verification. Invalidates all existing sessions and returns a new session token so the caller stays logged in.
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - current_password
+            - new_password
+          properties:
+            current_password:
+              type: string
+              description: The current admin password
+            new_password:
+              type: string
+              description: The new password (minimum 8 characters)
+    responses:
+      200:
+        description: Password changed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            session_token:
+              type: string
+              description: New session token (old sessions are invalidated)
+            expires_in:
+              type: integer
+              description: Session lifetime in seconds
+      400:
+        description: Missing fields or new password too short
+      401:
+        description: Current password is incorrect
+    """
+    data = request.get_json()
+    if not data or not data.get('current_password') or not data.get('new_password'):
+        return jsonify({'success': False, 'error': 'Current password and new password are required'}), 400
+
+    current_config = load_config()
+    stored_hash = current_config.get('app', {}).get('password_hash', '')
+    if not stored_hash:
+        return jsonify({'success': False, 'error': 'No password configured'}), 400
+
+    if not verify_password(data['current_password'], stored_hash):
+        return jsonify({'success': False, 'error': 'Current password is incorrect'}), 401
+
+    new_password = data['new_password']
+    if len(new_password) < 8:
+        return jsonify({'success': False, 'error': 'New password must be at least 8 characters'}), 400
+
+    new_hash = hash_password(new_password)
+    app_section = current_config.setdefault('app', {})
+    app_section['password_hash'] = new_hash
+
+    try:
+        with open(config_path, 'w') as f:
+            yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        logger.error(f"❌ Failed to write config during password change: {e}")
+        return jsonify({'success': False, 'error': f'Could not write config file: {e}'}), 500
+
+    _config_cache['mtime'] = 0
+    _config_cache['config'] = None
+
+    # Invalidate all existing sessions
+    SESSIONS.clear()
+
+    # Create a new session for the current user so they stay logged in
+    session_token = create_session()
+
+    logger.info("🔑 Admin password changed")
+    return jsonify({'success': True, 'session_token': session_token, 'expires_in': SESSION_TTL}), 200
 
 
 @app.route('/api/health', methods=['GET'])

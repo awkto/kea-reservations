@@ -627,6 +627,26 @@
                             <i class="bi bi-arrow-repeat me-1"></i>Regenerate API Token
                         </button>
                         <div class="form-text mt-1">Regenerating invalidates all existing API sessions.</div>
+
+                        <h6 class="border-bottom pb-2 mb-3 mt-4">Security</h6>
+
+                        <div class="mb-3">
+                            <label for="current-password" class="form-label">Current Password</label>
+                            <input type="password" class="form-control" id="current-password" autocomplete="current-password">
+                        </div>
+                        <div class="mb-3">
+                            <label for="new-password" class="form-label">New Password</label>
+                            <input type="password" class="form-control" id="new-password" autocomplete="new-password">
+                            <div class="form-text">Minimum 8 characters.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="confirm-new-password" class="form-label">Confirm New Password</label>
+                            <input type="password" class="form-control" id="confirm-new-password" autocomplete="new-password">
+                        </div>
+                        <div id="change-password-feedback" class="mb-2" style="display:none;"></div>
+                        <button class="btn btn-outline-warning btn-sm" type="button" onclick="changePassword()" id="change-password-btn">
+                            <i class="bi bi-key me-1"></i>Change Password
+                        </button>
                     </form>
                 </div>
                 <div class="modal-footer">
@@ -1894,6 +1914,67 @@
                 }
             } catch (err) {
                 showAlert('danger', 'Error: ' + err.message);
+            }
+        }
+
+        async function changePassword() {
+            const feedback = document.getElementById('change-password-feedback');
+            const currentPw = document.getElementById('current-password').value;
+            const newPw = document.getElementById('new-password').value;
+            const confirmPw = document.getElementById('confirm-new-password').value;
+
+            feedback.style.display = 'none';
+
+            if (!currentPw || !newPw || !confirmPw) {
+                feedback.className = 'mb-2 alert alert-danger py-2';
+                feedback.textContent = 'All password fields are required.';
+                feedback.style.display = 'block';
+                return;
+            }
+            if (newPw !== confirmPw) {
+                feedback.className = 'mb-2 alert alert-danger py-2';
+                feedback.textContent = 'New passwords do not match.';
+                feedback.style.display = 'block';
+                return;
+            }
+            if (newPw.length < 8) {
+                feedback.className = 'mb-2 alert alert-danger py-2';
+                feedback.textContent = 'New password must be at least 8 characters.';
+                feedback.style.display = 'block';
+                return;
+            }
+
+            const btn = document.getElementById('change-password-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Changing...';
+
+            try {
+                const resp = await authFetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ current_password: currentPw, new_password: newPw })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    localStorage.setItem(AUTH_TOKEN_KEY, data.session_token);
+                    document.getElementById('current-password').value = '';
+                    document.getElementById('new-password').value = '';
+                    document.getElementById('confirm-new-password').value = '';
+                    feedback.className = 'mb-2 alert alert-success py-2';
+                    feedback.textContent = 'Password changed successfully.';
+                    feedback.style.display = 'block';
+                } else {
+                    feedback.className = 'mb-2 alert alert-danger py-2';
+                    feedback.textContent = data.error || 'Failed to change password.';
+                    feedback.style.display = 'block';
+                }
+            } catch (err) {
+                feedback.className = 'mb-2 alert alert-danger py-2';
+                feedback.textContent = 'Error: ' + err.message;
+                feedback.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-key me-1"></i>Change Password';
             }
         }
 
