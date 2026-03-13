@@ -319,7 +319,7 @@ def check_auth():
       - The long-lived API token stored in config (for scripts/integrations)
     """
     open_paths = {'/', '/api/login', '/api/logout', '/api/first-run', '/api/setup',
-                  '/apidocs', '/apispec.json'}
+                  '/apidocs', '/apispec.json', '/api/health'}
     if request.path in open_paths or request.path.startswith('/flasgger_static'):
         return None
     auth_header = request.headers.get('Authorization', '')
