@@ -2566,7 +2566,7 @@
             statusEl.innerHTML = '';
 
             try {
-                const response = await fetch(`/api/subnets/${subnetId}`, {
+                const response = await authFetch(`/api/subnets/${subnetId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ pools, dns_servers, routers })
