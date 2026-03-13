@@ -2045,6 +2045,135 @@ def delete_reservation(ip_address):
         }), 500
 
 
+@app.route('/api/subnets/<int:subnet_id>', methods=['PUT'])
+def update_subnet(subnet_id):
+    """Update subnet settings (pools, DNS, router)
+    ---
+    tags:
+      - Subnets
+    summary: Update DHCP subnet settings
+    description: |
+      Updates a subnet's DHCP pool ranges, DNS servers, and/or gateway router.
+      Uses config-get/config-set to modify the running KEA configuration.
+    parameters:
+      - name: subnet_id
+        in: path
+        type: integer
+        required: true
+        description: Subnet ID to update
+        example: 1
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            pools:
+              type: array
+              items:
+                type: string
+              description: Pool ranges (e.g., ["192.168.1.100 - 192.168.1.200"])
+            dns_servers:
+              type: string
+              description: Comma-separated DNS server IPs
+              example: "8.8.8.8, 8.8.4.4"
+            routers:
+              type: string
+              description: Gateway/router IP
+              example: "192.168.1.1"
+    responses:
+      200:
+        description: Subnet updated successfully
+      400:
+        description: Validation error
+      500:
+        description: Internal server error
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+
+        pools = data.get('pools')
+        dns_servers = data.get('dns_servers')
+        routers = data.get('routers')
+
+        # Validate pools if provided
+        if pools is not None:
+            import ipaddress
+            if not isinstance(pools, list):
+                return jsonify({'success': False, 'error': 'pools must be a list'}), 400
+            for pool_str in pools:
+                if not isinstance(pool_str, str) or '-' not in pool_str:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid pool format: "{pool_str}". Expected "start_ip - end_ip"'
+                    }), 400
+                parts = [p.strip() for p in pool_str.split('-')]
+                if len(parts) != 2:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid pool format: "{pool_str}". Expected "start_ip - end_ip"'
+                    }), 400
+                try:
+                    start = ipaddress.IPv4Address(parts[0])
+                    end = ipaddress.IPv4Address(parts[1])
+                except ValueError as ve:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Invalid IP in pool "{pool_str}": {ve}'
+                    }), 400
+                if start > end:
+                    return jsonify({
+                        'success': False,
+                        'error': f'Pool start ({parts[0]}) must be <= end ({parts[1]})'
+                    }), 400
+
+        # Validate DNS servers if provided
+        if dns_servers is not None and dns_servers.strip():
+            is_valid, error_msg, dns_list = validate_dns_servers(dns_servers)
+            if not is_valid:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid DNS servers: {error_msg}'
+                }), 400
+            # Normalize to cleaned format
+            dns_servers = ", ".join(dns_list)
+
+        # Validate router if provided
+        if routers is not None and routers.strip():
+            import ipaddress
+            try:
+                ipaddress.IPv4Address(routers.strip())
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': f'Invalid router IP: {routers}'
+                }), 400
+            routers = routers.strip()
+
+        client = get_kea_client()
+        result = client.update_subnet(
+            subnet_id=subnet_id,
+            pools=pools,
+            dns_servers=dns_servers,
+            routers=routers
+        )
+
+        return jsonify({
+            'success': True,
+            'message': f'Subnet {subnet_id} updated successfully',
+            'subnet': result
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error updating subnet {subnet_id}: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/api/leases/ip/<ip_address>', methods=['DELETE'])
 def delete_lease_by_ip(ip_address):
     """Delete the lease for a specific IP address

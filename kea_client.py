@@ -612,6 +612,79 @@ class KeaClient:
         config = result.get('arguments', {})
         return config
 
+    def update_subnet(self, subnet_id: int, pools: Optional[List[str]] = None,
+                      dns_servers: Optional[str] = None,
+                      routers: Optional[str] = None) -> Dict:
+        """
+        Update a subnet's pools, DNS servers, and/or router via config-set.
+
+        Args:
+            subnet_id: ID of the subnet to update
+            pools: Optional list of pool range strings (e.g., ["192.168.1.100 - 192.168.1.200"])
+            dns_servers: Optional comma-separated DNS server IPs (e.g., "8.8.8.8, 8.8.4.4")
+            routers: Optional router/gateway IP (e.g., "192.168.1.1")
+
+        Returns:
+            Updated subnet summary
+        """
+        # Get current configuration
+        result = self._send_command("config-get", ["dhcp4"])
+        config = result.get('arguments', {})
+        dhcp4_config = config.get('Dhcp4', {})
+
+        # Find the target subnet
+        subnets = dhcp4_config.get('subnet4', [])
+        target_subnet = None
+        for subnet in subnets:
+            if subnet.get('id') == subnet_id:
+                target_subnet = subnet
+                break
+
+        if target_subnet is None:
+            raise Exception(f"Subnet {subnet_id} not found in configuration")
+
+        # Update pools if provided
+        if pools is not None:
+            target_subnet['pools'] = [{"pool": p} for p in pools]
+
+        # Update option-data for DNS and routers
+        if dns_servers is not None or routers is not None:
+            option_data = target_subnet.get('option-data', [])
+
+            if dns_servers is not None:
+                # Remove existing DNS option
+                option_data = [o for o in option_data
+                               if o.get('name') != 'domain-name-servers' and o.get('code') != 6]
+                if dns_servers.strip():
+                    option_data.append({
+                        "name": "domain-name-servers",
+                        "data": dns_servers
+                    })
+
+            if routers is not None:
+                # Remove existing router option
+                option_data = [o for o in option_data
+                               if o.get('name') != 'routers' and o.get('code') != 3]
+                if routers.strip():
+                    option_data.append({
+                        "name": "routers",
+                        "data": routers
+                    })
+
+            target_subnet['option-data'] = option_data
+
+        # Apply the updated configuration
+        set_arguments = {"Dhcp4": dhcp4_config}
+        self._send_command("config-set", ["dhcp4"], set_arguments)
+        logger.info(f"Updated subnet {subnet_id}: pools={pools}, dns={dns_servers}, routers={routers}")
+
+        return {
+            'id': subnet_id,
+            'subnet': target_subnet.get('subnet'),
+            'pools': [p.get('pool', '') if isinstance(p, dict) else str(p)
+                      for p in target_subnet.get('pools', [])],
+        }
+
     def get_subnets(self) -> List[Dict]:
         """
         Get configured DHCPv4 subnets

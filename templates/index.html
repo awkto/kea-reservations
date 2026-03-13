@@ -2379,6 +2379,9 @@
             curated.subnets.forEach((subnet, index) => {
                 const subnetId = `collapseSubnet${subnet.id}`;
                 const isFirst = index === 0;
+                const poolsValue = (subnet.pools || []).join('\n');
+                const dnsValue = subnet.options.dns_servers || '';
+                const routerValue = subnet.options.routers || '';
 
                 let subnetHtml = `
                     <div class="accordion-item">
@@ -2390,18 +2393,32 @@
                         </h2>
                         <div id="${subnetId}" class="accordion-collapse collapse ${isFirst ? 'show' : ''}" data-bs-parent="#keaConfigAccordion">
                             <div class="accordion-body">
+                                <form id="subnetForm-${subnet.id}" onsubmit="saveSubnetSettings(event, ${subnet.id})">
                                 <dl class="row mb-0">
                 `;
 
-                // Pools
-                if (subnet.pools && subnet.pools.length > 0) {
+                // Pools (editable)
+                subnetHtml += `
+                    <dt class="col-sm-4"><label for="subnet-pools-${subnet.id}">Pools</label></dt>
+                    <dd class="col-sm-8">
+                        <div id="pool-list-${subnet.id}">
+                `;
+                const pools = subnet.pools && subnet.pools.length > 0 ? subnet.pools : [''];
+                pools.forEach((pool, poolIdx) => {
                     subnetHtml += `
-                        <dt class="col-sm-4">Pools</dt>
-                        <dd class="col-sm-8"><code>${subnet.pools.join('<br>')}</code></dd>
+                            <div class="input-group input-group-sm mb-1 pool-entry">
+                                <input type="text" class="form-control font-monospace pool-input" value="${pool}" placeholder="192.168.1.100 - 192.168.1.200">
+                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removePoolRow(this)" title="Remove pool"><i class="bi bi-dash-circle"></i></button>
+                            </div>
                     `;
-                }
+                });
+                subnetHtml += `
+                        </div>
+                        <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addPoolRow(${subnet.id})" title="Add pool range"><i class="bi bi-plus-circle me-1"></i>Add Pool</button>
+                    </dd>
+                `;
 
-                // Lease Time (if different from global)
+                // Lease Time (read-only)
                 if (subnet.valid_lifetime !== null && subnet.valid_lifetime !== undefined) {
                     subnetHtml += `
                         <dt class="col-sm-4">Lease Time</dt>
@@ -2414,23 +2431,24 @@
                     `;
                 }
 
-                // Router
-                if (subnet.options.routers) {
-                    subnetHtml += `
-                        <dt class="col-sm-4">Router</dt>
-                        <dd class="col-sm-8"><code>${subnet.options.routers}</code></dd>
-                    `;
-                }
+                // Router (editable)
+                subnetHtml += `
+                    <dt class="col-sm-4"><label for="subnet-router-${subnet.id}">Router</label></dt>
+                    <dd class="col-sm-8">
+                        <input type="text" class="form-control form-control-sm font-monospace" id="subnet-router-${subnet.id}" value="${routerValue}" placeholder="e.g. 192.168.1.1">
+                    </dd>
+                `;
 
-                // DNS Servers
-                if (subnet.options.dns_servers) {
-                    subnetHtml += `
-                        <dt class="col-sm-4">DNS Servers</dt>
-                        <dd class="col-sm-8"><code>${subnet.options.dns_servers}</code></dd>
-                    `;
-                }
+                // DNS Servers (editable)
+                subnetHtml += `
+                    <dt class="col-sm-4"><label for="subnet-dns-${subnet.id}">DNS Servers</label></dt>
+                    <dd class="col-sm-8">
+                        <input type="text" class="form-control form-control-sm font-monospace" id="subnet-dns-${subnet.id}" value="${dnsValue}" placeholder="e.g. 8.8.8.8, 8.8.4.4">
+                        <div class="form-text">Comma-separated IPs (max 4)</div>
+                    </dd>
+                `;
 
-                // Reservation count
+                // Reservation count (read-only)
                 subnetHtml += `
                     <dt class="col-sm-4">Reservations</dt>
                     <dd class="col-sm-8">${subnet.reservation_count}</dd>
@@ -2438,6 +2456,11 @@
 
                 subnetHtml += `
                                 </dl>
+                                <div class="text-end mt-2">
+                                    <div id="subnet-save-status-${subnet.id}" class="d-inline me-2"></div>
+                                    <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-check-lg me-1"></i>Save Changes</button>
+                                </div>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -2493,6 +2516,76 @@
         function renderRawView(config) {
             const jsonContainer = document.getElementById('kea-config-json').querySelector('code');
             jsonContainer.textContent = JSON.stringify(config, null, 2);
+        }
+
+        // --- Subnet editing helpers ---
+
+        function addPoolRow(subnetId) {
+            const container = document.getElementById(`pool-list-${subnetId}`);
+            const div = document.createElement('div');
+            div.className = 'input-group input-group-sm mb-1 pool-entry';
+            div.innerHTML = `
+                <input type="text" class="form-control font-monospace pool-input" value="" placeholder="192.168.1.100 - 192.168.1.200">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="removePoolRow(this)" title="Remove pool"><i class="bi bi-dash-circle"></i></button>
+            `;
+            container.appendChild(div);
+        }
+
+        function removePoolRow(btn) {
+            const entry = btn.closest('.pool-entry');
+            const container = entry.parentElement;
+            // Keep at least one row
+            if (container.querySelectorAll('.pool-entry').length > 1) {
+                entry.remove();
+            } else {
+                entry.querySelector('.pool-input').value = '';
+            }
+        }
+
+        async function saveSubnetSettings(event, subnetId) {
+            event.preventDefault();
+
+            const statusEl = document.getElementById(`subnet-save-status-${subnetId}`);
+            const form = document.getElementById(`subnetForm-${subnetId}`);
+            const submitBtn = form.querySelector('button[type="submit"]');
+
+            // Gather pool values
+            const poolInputs = form.querySelectorAll('.pool-input');
+            const pools = [];
+            for (const input of poolInputs) {
+                const val = input.value.trim();
+                if (val) pools.push(val);
+            }
+
+            const dns_servers = document.getElementById(`subnet-dns-${subnetId}`).value.trim();
+            const routers = document.getElementById(`subnet-router-${subnetId}`).value.trim();
+
+            // Show saving state
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+            statusEl.innerHTML = '';
+
+            try {
+                const response = await fetch(`/api/subnets/${subnetId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pools, dns_servers, routers })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    statusEl.innerHTML = '<span class="text-success"><i class="bi bi-check-circle me-1"></i>Saved</span>';
+                    setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+                } else {
+                    statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle me-1"></i>${data.error}</span>`;
+                }
+            } catch (err) {
+                statusEl.innerHTML = `<span class="text-danger"><i class="bi bi-exclamation-circle me-1"></i>Failed to save</span>`;
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save Changes';
+            }
         }
 
         // Auto-refresh every 30 seconds
