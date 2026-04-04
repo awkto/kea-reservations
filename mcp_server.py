@@ -11,7 +11,7 @@ import uuid
 import queue
 import logging
 import time
-from flask import request, jsonify, Response, Blueprint
+from flask import request, jsonify, Response, Blueprint, stream_with_context
 
 logger = logging.getLogger(__name__)
 
@@ -572,8 +572,9 @@ def register_mcp_routes(app):
             logger.info(f"MCP SSE session closed: {session_id}")
             return response
 
-        resp = Response(session.stream(), mimetype="text/event-stream")
+        resp = Response(stream_with_context(session.stream()), mimetype="text/event-stream")
         resp.headers["Cache-Control"] = "no-cache"
+        resp.headers["Connection"] = "keep-alive"
         resp.headers["X-Accel-Buffering"] = "no"
         resp.call_on_close(lambda: _sessions.pop(session_id, None))
         return resp
