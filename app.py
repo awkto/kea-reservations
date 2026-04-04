@@ -2576,10 +2576,49 @@ def import_reservations():
         }), 500
 
 
-if os.environ.get('MCP_ENABLED', '').lower() == 'true':
-    from mcp_server import register_mcp_routes
-    register_mcp_routes(app)
-    print("MCP server enabled at /mcp/sse")
+from mcp_server import register_mcp_routes
+register_mcp_routes(app)
+
+
+def is_mcp_enabled():
+    """Check if MCP is enabled via env var or saved config."""
+    if os.environ.get('MCP_ENABLED', '').lower() in ('true', '1', 'yes'):
+        return True
+    current_config = load_config()
+    return current_config.get('app', {}).get('mcp_enabled', False)
+
+
+@app.route('/api/config/mcp', methods=['GET'])
+def get_mcp_config():
+    """Get MCP enabled status"""
+    return jsonify({'enabled': is_mcp_enabled()})
+
+
+@app.route('/api/config/mcp', methods=['POST'])
+def save_mcp_config():
+    """Toggle MCP enabled status"""
+    data = request.json or {}
+    enabled = bool(data.get('enabled', False))
+
+    # Update config.yaml
+    file_config = {}
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            file_config = yaml.safe_load(f) or {}
+
+    if 'app' not in file_config:
+        file_config['app'] = {}
+    file_config['app']['mcp_enabled'] = enabled
+
+    with open(config_path, 'w') as f:
+        yaml.dump(file_config, f, default_flow_style=False)
+
+    # Invalidate config cache
+    global _config_cache
+    _config_cache = {'mtime': 0, 'config': None}
+    load_config()
+
+    return jsonify({'success': True, 'enabled': enabled})
 
 
 if __name__ == '__main__':

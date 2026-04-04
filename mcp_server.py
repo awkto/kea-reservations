@@ -542,10 +542,23 @@ def register_mcp_routes(app):
 
     @app.route("/mcpdocs")
     def mcpdocs():
-        return _render_mcpdocs(), 200, {"Content-Type": "text/html"}
+        from app import is_mcp_enabled
+        html = _render_mcpdocs()
+        if not is_mcp_enabled():
+            banner = (
+                '<div style="background:#b91c1c;color:#fff;padding:0.75rem 1.25rem;'
+                'border-radius:8px;margin-bottom:1.5rem;font-weight:600;">'
+                'MCP is currently disabled. Enable it in Settings or set '
+                'MCP_ENABLED=true to use MCP endpoints.</div>'
+            )
+            html = html.replace('<div class="endpoint-info">', banner + '<div class="endpoint-info">')
+        return html, 200, {"Content-Type": "text/html"}
 
     @app.route("/mcp/sse")
     def mcp_sse():
+        from app import is_mcp_enabled
+        if not is_mcp_enabled():
+            return jsonify({"error": "MCP is not enabled. Enable it in Settings or set MCP_ENABLED=true"}), 404
         if not validate_bearer_token(request):
             return jsonify({"error": "Unauthorized"}), 401
 
@@ -567,6 +580,9 @@ def register_mcp_routes(app):
 
     @app.route("/mcp/messages", methods=["POST"])
     def mcp_messages():
+        from app import is_mcp_enabled
+        if not is_mcp_enabled():
+            return jsonify({"error": "MCP is not enabled. Enable it in Settings or set MCP_ENABLED=true"}), 404
         if not validate_bearer_token(request):
             return jsonify({"error": "Unauthorized"}), 401
 

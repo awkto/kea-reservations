@@ -596,6 +596,21 @@
                             </div>
                         </div>
 
+                        <h6 class="border-bottom pb-2 mb-3 mt-4">Integrations</h6>
+
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="config-mcp-enabled">
+                                <label class="form-check-label" for="config-mcp-enabled">
+                                    Enable MCP (Model Context Protocol)
+                                </label>
+                                <div class="form-text">
+                                    Exposes an MCP server at <code>/mcp/sse</code> for AI tool integrations.
+                                    See <a href="/mcpdocs" target="_blank">/mcpdocs</a> for available tools.
+                                </div>
+                            </div>
+                        </div>
+
                         <h6 class="border-bottom pb-2 mb-3 mt-4">Logging Settings</h6>
 
                         <div class="mb-3">
@@ -1858,6 +1873,16 @@
                     document.getElementById('config-api-token').type = 'password';
                     document.getElementById('api-token-eye-icon').className = 'bi bi-eye';
 
+                    // Load MCP toggle state
+                    try {
+                        const mcpResp = await authFetch('/api/config/mcp');
+                        const mcpData = await mcpResp.json();
+                        document.getElementById('config-mcp-enabled').checked = mcpData.enabled || false;
+                    } catch (e) {
+                        console.warn('Failed to load MCP config:', e);
+                        document.getElementById('config-mcp-enabled').checked = false;
+                    }
+
                     // Show config file status
                     const statusEl = document.getElementById('config-file-status');
                     if (data.config_exists) {
@@ -2016,6 +2041,19 @@
                 const data = await response.json();
                 
                 if (data.success) {
+                    // Save MCP toggle state separately
+                    try {
+                        await authFetch('/api/config/mcp', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                enabled: document.getElementById('config-mcp-enabled').checked
+                            })
+                        });
+                    } catch (e) {
+                        console.warn('Failed to save MCP config:', e);
+                    }
+
                     // Sync lease delete confirmation preference immediately
                     confirmLeaseDelete = newConfig.app.confirm_lease_delete;
                     localStorage.setItem('confirmLeaseDelete', confirmLeaseDelete);
