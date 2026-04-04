@@ -299,6 +299,65 @@ See `sample_reservations.json` in the repository for a complete example.
 
 The import process will continue even if individual reservations fail, and you'll receive a detailed report at the end.
 
+## MCP (Model Context Protocol) Integration
+
+This app includes a built-in MCP server for AI agent integration (e.g., Claude Code). MCP allows AI assistants to manage DHCP leases and reservations programmatically.
+
+### Enabling MCP
+
+Set the `MCP_ENABLED` environment variable:
+
+```bash
+docker run -d -p 5000:5000 \
+  -e MCP_ENABLED=true \
+  -v $(pwd)/config.yaml:/app/config/config.yaml:ro \
+  awkto/kea-gui-reservations:latest
+```
+
+### MCP Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /mcp/sse` | SSE transport (requires Bearer token) |
+| `POST /mcp/messages` | JSON-RPC messages (requires Bearer token) |
+| `GET /mcpdocs` | Interactive MCP tool documentation |
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_leases` | List all active DHCP leases |
+| `list_reservations` | List all DHCP reservations |
+| `create_reservation` | Create a new reservation |
+| `delete_reservation` | Delete a reservation by IP |
+| `promote_lease` | Promote a lease to a reservation |
+| `list_subnets` | List configured subnets |
+| `delete_lease_by_ip` | Delete a lease by IP address |
+| `delete_leases_by_mac` | Delete leases by MAC address |
+| `export_reservations` | Export reservations to JSON |
+| `import_reservations` | Import reservations from JSON |
+| `health_check` | Check health and KEA connectivity |
+
+### Claude Code Configuration
+
+Add to your Claude Code MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "kea": {
+      "type": "url",
+      "url": "https://your-kea-host/mcp/sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_TOKEN"
+      }
+    }
+  }
+}
+```
+
+The MCP server uses the same API token as the REST API.
+
 ## Security Considerations
 
 - Use HTTPS in production

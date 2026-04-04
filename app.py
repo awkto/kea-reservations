@@ -319,8 +319,8 @@ def check_auth():
       - The long-lived API token stored in config (for scripts/integrations)
     """
     open_paths = {'/', '/api/login', '/api/logout', '/api/first-run', '/api/setup',
-                  '/apidocs', '/apispec.json', '/api/health'}
-    if request.path in open_paths or request.path.startswith('/flasgger_static'):
+                  '/apidocs', '/apispec.json', '/api/health', '/mcpdocs'}
+    if request.path in open_paths or request.path.startswith('/flasgger_static') or request.path.startswith('/mcp/'):
         return None
     auth_header = request.headers.get('Authorization', '')
     if not auth_header.startswith('Bearer '):
@@ -2574,6 +2574,12 @@ def import_reservations():
             'success': False,
             'error': str(e)
         }), 500
+
+
+if os.environ.get('MCP_ENABLED', '').lower() == 'true':
+    from mcp_server import register_mcp_routes
+    register_mcp_routes(app)
+    print("MCP server enabled at /mcp/sse")
 
 
 if __name__ == '__main__':
