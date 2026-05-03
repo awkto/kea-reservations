@@ -611,6 +611,23 @@
                             </div>
                         </div>
 
+                        <h6 class="border-bottom pb-2 mb-3 mt-4">DHCP Server Behavior</h6>
+
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="config-match-client-id-off">
+                                <label class="form-check-label" for="config-match-client-id-off">
+                                    Match clients by MAC only
+                                </label>
+                                <div class="form-text">
+                                    Ignores DHCP client-id (Option 61) so every device is identified by its hardware address.
+                                    Recommended for home/small networks. Prevents the "Evicting" stalemate where a device's
+                                    OS sends a different client-id after reinstall and Kea won't migrate it to its reserved IP.
+                                </div>
+                                <div id="config-mci-overrides-warning" class="alert alert-warning mt-2 mb-0 py-2 px-3" style="display:none; font-size: 0.85rem;"></div>
+                            </div>
+                        </div>
+
                         <h6 class="border-bottom pb-2 mb-3 mt-4">Logging Settings</h6>
 
                         <div class="mb-3">
@@ -1883,6 +1900,39 @@
                         document.getElementById('config-mcp-enabled').checked = false;
                     }
 
+                    // Load Kea match-client-id state. Toggle is "match by MAC only",
+                    // which is the inverse of Kea's match-client-id flag.
+                    const mciToggle = document.getElementById('config-match-client-id-off');
+                    const mciWarn = document.getElementById('config-mci-overrides-warning');
+                    mciToggle.dataset.original = '';
+                    mciWarn.style.display = 'none';
+                    mciWarn.innerHTML = '';
+                    try {
+                        const mciResp = await authFetch('/api/kea-config/match-client-id');
+                        const mciData = await mciResp.json();
+                        if (mciData.success) {
+                            mciToggle.checked = mciData.global === false;
+                            mciToggle.dataset.original = mciToggle.checked ? '1' : '0';
+                            const overrides = mciData.subnet_overrides || [];
+                            if (overrides.length) {
+                                const lines = overrides.map(o =>
+                                    `subnet ${o.id} (${o.subnet}): match-client-id = <strong>${o.value}</strong>`
+                                ).join('<br>');
+                                mciWarn.innerHTML =
+                                    `<i class="bi bi-exclamation-triangle me-1"></i>` +
+                                    `Per-subnet overrides exist and will take precedence over this global setting:<br>${lines}`;
+                                mciWarn.style.display = 'block';
+                            }
+                        } else {
+                            mciToggle.checked = false;
+                            mciToggle.disabled = true;
+                        }
+                    } catch (e) {
+                        console.warn('Failed to load match-client-id:', e);
+                        mciToggle.checked = false;
+                        mciToggle.disabled = true;
+                    }
+
                     // Show config file status
                     const statusEl = document.getElementById('config-file-status');
                     if (data.config_exists) {
@@ -2052,6 +2102,30 @@
                         });
                     } catch (e) {
                         console.warn('Failed to save MCP config:', e);
+                    }
+
+                    // Save Kea match-client-id only if it changed (avoids
+                    // unnecessary config-set+config-write on every save).
+                    const mciToggle = document.getElementById('config-match-client-id-off');
+                    const mciCurrent = mciToggle.checked ? '1' : '0';
+                    if (!mciToggle.disabled && mciToggle.dataset.original !== mciCurrent) {
+                        try {
+                            const mciResp = await authFetch('/api/kea-config/match-client-id', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    enabled: !mciToggle.checked
+                                })
+                            });
+                            const mciResult = await mciResp.json();
+                            if (!mciResult.success) {
+                                throw new Error(mciResult.error || 'Failed to update Kea');
+                            }
+                        } catch (e) {
+                            console.warn('Failed to save match-client-id:', e);
+                            alert('DHCP behavior change failed: ' + e.message +
+                                  '\n\nOther settings were saved successfully.');
+                        }
                     }
 
                     // Sync lease delete confirmation preference immediately

@@ -685,6 +685,68 @@ class KeaClient:
                       for p in target_subnet.get('pools', [])],
         }
 
+    def get_match_client_id(self) -> Dict:
+        """
+        Read the global Dhcp4 match-client-id setting and any subnet-level overrides.
+
+        Kea's default is true (match by client-id). When false, leases and
+        reservations are keyed by hardware address only — see GitLab issue #12
+        for the eviction scenario this fixes.
+
+        Returns:
+            {
+                "global": bool,                # effective global value (default True)
+                "global_explicit": bool,       # True if explicitly set in config
+                "subnet_overrides": [          # subnets with their own match-client-id
+                    {"id": int, "subnet": str, "value": bool}
+                ]
+            }
+        """
+        result = self._send_command("config-get", ["dhcp4"])
+        dhcp4 = result.get('arguments', {}).get('Dhcp4', {})
+        global_explicit = 'match-client-id' in dhcp4
+        global_value = bool(dhcp4.get('match-client-id', True))
+        overrides = []
+        for s in dhcp4.get('subnet4', []):
+            if 'match-client-id' in s:
+                overrides.append({
+                    'id': s.get('id'),
+                    'subnet': s.get('subnet'),
+                    'value': bool(s.get('match-client-id')),
+                })
+        return {
+            'global': global_value,
+            'global_explicit': global_explicit,
+            'subnet_overrides': overrides,
+        }
+
+    def set_match_client_id(self, enabled: bool, persist: bool = True) -> Dict:
+        """
+        Set the global Dhcp4 match-client-id flag, validate, apply, and persist.
+
+        Args:
+            enabled: True to match by client-id (Kea default); False to match
+                by hardware address only.
+            persist: If True, also call config-write to save to disk so the
+                change survives a Kea restart.
+
+        Returns:
+            {"global": bool, "persisted": bool}
+        """
+        result = self._send_command("config-get", ["dhcp4"])
+        dhcp4 = result.get('arguments', {}).get('Dhcp4', {})
+        dhcp4['match-client-id'] = bool(enabled)
+
+        # Validate before applying so a bad config doesn't take down the server.
+        self._send_command("config-test", ["dhcp4"], {"Dhcp4": dhcp4})
+        self._send_command("config-set", ["dhcp4"], {"Dhcp4": dhcp4})
+        persisted = False
+        if persist:
+            self._send_command("config-write", ["dhcp4"])
+            persisted = True
+        logger.info(f"Set global match-client-id={enabled}, persisted={persisted}")
+        return {'global': bool(enabled), 'persisted': persisted}
+
     def get_subnets(self) -> List[Dict]:
         """
         Get configured DHCPv4 subnets

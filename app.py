@@ -2594,6 +2594,54 @@ def get_mcp_config():
     return jsonify({'enabled': is_mcp_enabled()})
 
 
+@app.route('/api/kea-config/match-client-id', methods=['GET'])
+def get_match_client_id():
+    """Read Kea's global match-client-id setting plus any subnet overrides.
+    ---
+    tags:
+      - Configuration
+    summary: Read Kea match-client-id
+    responses:
+      200:
+        description: Current global value and per-subnet overrides
+    """
+    try:
+        client = get_kea_client()
+        return jsonify({'success': True, **client.get_match_client_id()}), 200
+    except Exception as e:
+        logger.error(f"Error reading match-client-id: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/kea-config/match-client-id', methods=['POST'])
+def set_match_client_id():
+    """Set Kea's global match-client-id flag and persist to disk.
+    ---
+    tags:
+      - Configuration
+    summary: Set Kea match-client-id
+    parameters:
+      - in: body
+        name: body
+        schema:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+    """
+    try:
+        data = request.json or {}
+        if 'enabled' not in data:
+            return jsonify({'success': False, 'error': "'enabled' is required"}), 400
+        enabled = bool(data['enabled'])
+        client = get_kea_client()
+        result = client.set_match_client_id(enabled)
+        return jsonify({'success': True, **result}), 200
+    except Exception as e:
+        logger.error(f"Error setting match-client-id: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/config/mcp', methods=['POST'])
 def save_mcp_config():
     """Toggle MCP enabled status"""
