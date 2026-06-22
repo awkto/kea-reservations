@@ -10,6 +10,17 @@ kea:
   # Subnet ID for DHCPv4 (you can make this configurable per request)
   default_subnet_id: 1
 
+  # Dedicated reservation pools, keyed by subnet id. When a pool is set, POST
+  # /api/promote allocates a fresh IP from it by default (in_place omitted/false)
+  # instead of pinning the device's current lease IP, and deletes the old lease so
+  # the device re-homes onto the reserved IP. Pass in_place=true to keep the same IP.
+  # Each pool should sit inside the subnet prefix but OUTSIDE the dynamic
+  # subnet4.pools, so a static IP is visually distinguishable from a dynamic one.
+  # Accepts a dash range or CIDR.
+  # reservation_pools:
+  #   1: "10.33.250.10-10.33.250.250"
+  #   2: "10.34.250.0/24"
+
 # Flask Application Settings
 app:
   host: "0.0.0.0"

@@ -8,6 +8,7 @@ import secrets
 import hashlib
 import hmac
 import time
+import ipaddress
 import logging
 from flask import Flask, render_template, jsonify, request
 import yaml
@@ -83,7 +84,13 @@ DEFAULT_CONFIG = {
         'control_agent_url': 'http://localhost:8000',
         'username': '',
         'password': '',
-        'default_subnet_id': 1
+        'default_subnet_id': 1,
+        # Dedicated reservation pools, keyed by subnet id. When set, /api/promote
+        # allocates a fresh IP from this pool (by default) instead of pinning the
+        # device's current lease IP. Value is a dash range ("10.33.250.10-10.33.250.250")
+        # or CIDR ("10.33.250.0/24"). The pool should sit inside the subnet prefix
+        # but outside the dynamic subnet4.pools so static IPs are visually distinct.
+        'reservation_pools': {}
     },
     'app': {
         'host': '0.0.0.0',
@@ -1209,6 +1216,84 @@ def create_reservation():
         }), 500
 
 
+def _parse_ip_range(range_str):
+    """Parse a reservation pool string into (start, end) IPv4Address.
+
+    Accepts CIDR ("10.33.250.0/24") or dash range ("10.33.250.10-10.33.250.250").
+    Raises ValueError on an unrecognised/empty value.
+    """
+    range_str = (range_str or "").strip()
+    if not range_str:
+        raise ValueError("empty range")
+    if "/" in range_str:
+        net = ipaddress.ip_network(range_str, strict=False)
+        return net.network_address, net.broadcast_address
+    if "-" in range_str:
+        a, b = range_str.split("-", 1)
+        return ipaddress.IPv4Address(a.strip()), ipaddress.IPv4Address(b.strip())
+    raise ValueError(f"unrecognised range format: {range_str!r} (expected CIDR or start-end)")
+
+
+def _get_reservation_pool(subnet_id, cfg=None):
+    """Return the configured reservation pool string for a subnet, or None.
+
+    Tolerates YAML keys written as either integers or strings.
+    """
+    cfg = cfg or load_config()
+    pools = (cfg.get('kea') or {}).get('reservation_pools') or {}
+    if not isinstance(pools, dict):
+        return None
+    return pools.get(str(subnet_id)) or pools.get(subnet_id)
+
+
+def _allocate_reservation_ip(client, subnet_id, pool_str):
+    """Find the next free IP in the reservation pool for a subnet.
+
+    Excludes existing reservations and active leases, skips .0/.255, and (when the
+    subnet prefix is known) only returns IPs inside that subnet. Returns
+    (ip_string, None) on success or (None, error_message) on failure.
+    """
+    try:
+        start, end = _parse_ip_range(pool_str)
+    except ValueError as e:
+        return None, f"Invalid reservation pool {pool_str!r}: {e}"
+
+    # Resolve the subnet prefix so we never hand out an off-subnet IP (Kea won't serve it).
+    subnet_net = None
+    try:
+        for s in client.get_subnets():
+            if s.get('id') == subnet_id and s.get('subnet'):
+                subnet_net = ipaddress.ip_network(s['subnet'], strict=False)
+                break
+    except Exception as e:
+        logger.warning(f"Could not resolve subnet prefix for subnet {subnet_id}: {e}")
+
+    used = set()
+    try:
+        used |= {r['ip-address'] for r in client.get_reservations(subnet_id=subnet_id)
+                 if r.get('ip-address')}
+    except Exception as e:
+        logger.warning(f"Could not read reservations during allocation: {e}")
+    try:
+        used |= {l['ip-address'] for l in client.get_leases(subnet_id=subnet_id)
+                 if l.get('ip-address')}
+    except Exception as e:
+        logger.warning(f"Could not read leases during allocation: {e}")
+
+    addr = start
+    while addr <= end:
+        last_octet = int(addr) & 0xFF
+        s = str(addr)
+        in_subnet = subnet_net is None or addr in subnet_net
+        if last_octet not in (0, 255) and s not in used and in_subnet:
+            return s, None
+        addr += 1
+
+    bound = f" within subnet {subnet_net}" if subnet_net else ""
+    return None, (f"No free IP in reservation pool {start}-{end}{bound} "
+                  f"({len(used)} address(es) already reserved or leased)")
+
+
 @app.route('/api/promote', methods=['POST'])
 def promote_lease():
     """Promote a lease to a permanent reservation
@@ -1229,12 +1314,20 @@ def promote_lease():
         schema:
           type: object
           required:
-            - ip_address
             - hw_address
           properties:
+            in_place:
+              type: boolean
+              description: >
+                If true, pin the device's current lease IP (ip_address required).
+                If false (the default when a reservation pool is configured for the
+                subnet), allocate a fresh IP from that pool and delete the old lease.
+              example: false
             ip_address:
               type: string
-              description: IP address from the active lease
+              description: >
+                Active lease IP. Required when in_place=true; for pool promotion it
+                only identifies the old lease to clean up (optional).
               example: "192.168.1.100"
             hw_address:
               type: string
@@ -1302,11 +1395,39 @@ def promote_lease():
         hostname = data.get('hostname', '')
         subnet_id = data.get('subnet_id')
         dns_servers = data.get('dns_servers', '')
+        in_place_param = data.get('in_place', None)
 
-        if not ip_address or not hw_address:
+        if not hw_address:
             return jsonify({
                 'success': False,
-                'error': 'ip_address and hw_address are required'
+                'error': 'hw_address is required'
+            }), 400
+
+        # Resolve subnet + reservation pool
+        cfg = load_config()
+        if subnet_id is None:
+            subnet_id = cfg.get('kea', {}).get('default_subnet_id', 1)
+        pool_str = _get_reservation_pool(subnet_id, cfg)
+
+        # Default mode: allocate from the reservation pool when one is configured,
+        # otherwise fall back to in-place (backward compatible with deployments that
+        # have no pool). An explicit in_place flag always wins.
+        if in_place_param is None:
+            in_place = pool_str is None
+        else:
+            in_place = bool(in_place_param)
+
+        if in_place and not ip_address:
+            return jsonify({
+                'success': False,
+                'error': 'ip_address is required when in_place=true'
+            }), 400
+
+        if not in_place and not pool_str:
+            return jsonify({
+                'success': False,
+                'error': (f'No reservation pool configured for subnet {subnet_id}. '
+                          f'Set kea.reservation_pools or call with in_place=true.')
             }), 400
 
         # Validate DNS servers if provided
@@ -1328,38 +1449,83 @@ def promote_lease():
 
         try:
             with RESERVATION_LOCK:
-                # Check if a reservation already exists for this IP
+                hw_lower = hw_address.lower()
+
+                # Idempotency: if this MAC already has a reservation, return it unchanged.
                 try:
                     reservations = client.get_reservations(subnet_id=subnet_id)
-                    existing_reservation = next((r for r in reservations if r.get('ip-address') == ip_address), None)
-
-                    if existing_reservation:
-                        logger.warning(f"Cannot promote: reservation already exists for IP {ip_address}")
-                        return jsonify({
-                            'success': False,
-                            'error': f'A reservation already exists for IP {ip_address}. Please choose a different IP address.'
-                        }), 400
                 except Exception as e:
                     logger.warning(f"Could not verify existing reservations: {e}")
-                    # Continue anyway if reservation check fails
+                    reservations = []
 
-                logger.info(f"Promoting lease: IP={ip_address}, MAC={hw_address}")
+                existing_by_mac = next(
+                    (r for r in reservations if r.get('hw-address', '').lower() == hw_lower), None
+                )
+                if existing_by_mac:
+                    logger.info(
+                        f"MAC {hw_address} already reserved at {existing_by_mac.get('ip-address')} — idempotent"
+                    )
+                    return jsonify({
+                        'success': True,
+                        'message': f"MAC {hw_address} already has reservation {existing_by_mac.get('ip-address')}",
+                        'reservation': existing_by_mac,
+                        'ip_address': existing_by_mac.get('ip-address'),
+                        'in_place': in_place,
+                        'leases_cleaned': 0
+                    }), 200
+
+                # Pick the target IP
+                if in_place:
+                    existing_by_ip = next(
+                        (r for r in reservations if r.get('ip-address') == ip_address), None
+                    )
+                    if existing_by_ip:
+                        logger.warning(f"Cannot promote in place: IP {ip_address} already reserved")
+                        return jsonify({
+                            'success': False,
+                            'error': f'A reservation already exists for IP {ip_address} (different MAC).'
+                        }), 409
+                    target_ip = ip_address
+                else:
+                    target_ip, alloc_err = _allocate_reservation_ip(client, subnet_id, pool_str)
+                    if not target_ip:
+                        logger.warning(f"Promote allocation failed: {alloc_err}")
+                        return jsonify({'success': False, 'error': alloc_err}), 409
+
+                logger.info(
+                    f"Promoting MAC={hw_address} -> {target_ip} (in_place={in_place}, subnet={subnet_id})"
+                )
 
                 result = client.create_reservation(
-                    ip_address=ip_address,
+                    ip_address=target_ip,
                     hw_address=hw_address,
                     hostname=hostname,
                     subnet_id=subnet_id,
                     option_data=option_data
                 )
 
+                # For pool promotion, delete the old dynamic lease so the device
+                # re-DHCPs onto the new reserved IP. (In-place keeps its IP, so the
+                # existing lease is simply superseded by the reservation.)
+                leases_cleaned = 0
+                if not in_place:
+                    try:
+                        if ip_address:
+                            leases_cleaned += client.delete_lease_by_ip(ip_address)
+                        leases_cleaned += client.delete_leases_by_mac(hw_address)
+                    except Exception as e:
+                        logger.warning(f"Promote: old lease cleanup failed: {e}")
+
                 return jsonify({
                     'success': True,
-                    'message': f'Successfully promoted {ip_address} to reservation',
-                    'reservation': result
+                    'message': f'Successfully promoted {hw_address} to reservation {target_ip}',
+                    'reservation': result,
+                    'ip_address': target_ip,
+                    'in_place': in_place,
+                    'leases_cleaned': leases_cleaned
                 }), 200
         except FileLockTimeout:
-            logger.error(f"Reservation lock timeout for promote IP={ip_address}, MAC={hw_address}")
+            logger.error(f"Reservation lock timeout for promote MAC={hw_address}")
             return jsonify({
                 'success': False,
                 'error': 'Server busy processing another reservation request, please retry'
