@@ -1306,6 +1306,11 @@ def promote_lease():
       Converts an active DHCP lease into a permanent reservation. This ensures the same IP address
       will always be assigned to the specified MAC address. Includes duplicate checking to prevent
       overwriting existing reservations.
+
+      For pool promotion the device's existing dynamic lease is left intact by default: Kea
+      reassigns the reserved IP to the MAC on the next reboot/renew. Set force_redhcp=true to
+      delete the old lease immediately (forces a re-DHCP, but opens a transient IP-conflict
+      window while the device still uses the old IP).
     parameters:
       - name: body
         in: body
@@ -1321,13 +1326,25 @@ def promote_lease():
               description: >
                 If true, pin the device's current lease IP (ip_address required).
                 If false (the default when a reservation pool is configured for the
-                subnet), allocate a fresh IP from that pool and delete the old lease.
+                subnet), allocate a fresh IP from that pool. The old dynamic lease is
+                left intact by default; Kea reassigns the reserved IP on the next
+                reboot/renew.
+              example: false
+            force_redhcp:
+              type: boolean
+              description: >
+                Pool promotion only. If true, delete the device's old dynamic lease
+                after creating the reservation to force an immediate re-DHCP onto the
+                reserved IP. Defaults to false (leave the lease intact and rely on Kea
+                reassignment on reboot/renew). Warning: deleting the lease opens a
+                transient IP-conflict window while the device still uses the old IP.
+                Accepts `delete_lease` as an alias.
               example: false
             ip_address:
               type: string
               description: >
                 Active lease IP. Required when in_place=true; for pool promotion it
-                only identifies the old lease to clean up (optional).
+                only identifies the old lease to delete when force_redhcp=true (optional).
               example: "192.168.1.100"
             hw_address:
               type: string
@@ -1396,6 +1413,11 @@ def promote_lease():
         subnet_id = data.get('subnet_id')
         dns_servers = data.get('dns_servers', '')
         in_place_param = data.get('in_place', None)
+        # Optional override: force an immediate re-DHCP by deleting the old
+        # dynamic lease after promotion. Defaults to False — by default the old
+        # lease is left intact and Kea reassigns the reserved IP on the next
+        # reboot/renew. Accept `delete_lease` as an alias.
+        force_redhcp = bool(data.get('force_redhcp', data.get('delete_lease', False)))
 
         if not hw_address:
             return jsonify({
@@ -1504,11 +1526,15 @@ def promote_lease():
                     option_data=option_data
                 )
 
-                # For pool promotion, delete the old dynamic lease so the device
-                # re-DHCPs onto the new reserved IP. (In-place keeps its IP, so the
-                # existing lease is simply superseded by the reservation.)
+                # By default the old dynamic lease is left intact: Kea reassigns
+                # the reserved IP to this MAC on the next reboot/renew (verified in
+                # issue #19), so deleting it is unnecessary and would open a
+                # transient IP-conflict window. Only when an operator explicitly
+                # requests force_redhcp do we delete the old lease to force an
+                # immediate move. (In-place keeps its IP, so its lease is simply
+                # superseded by the reservation.)
                 leases_cleaned = 0
-                if not in_place:
+                if not in_place and force_redhcp:
                     try:
                         if ip_address:
                             leases_cleaned += client.delete_lease_by_ip(ip_address)
