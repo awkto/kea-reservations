@@ -326,7 +326,7 @@ def check_auth():
       - The long-lived API token stored in config (for scripts/integrations)
     """
     open_paths = {'/', '/api/login', '/api/logout', '/api/first-run', '/api/setup',
-                  '/apidocs', '/apispec.json', '/api/health', '/mcpdocs'}
+                  '/apidocs', '/apispec.json', '/api/health', '/api/version', '/mcpdocs'}
     if request.path in open_paths or request.path.startswith('/flasgger_static') or request.path.startswith('/mcp/'):
         return None
     auth_header = request.headers.get('Authorization', '')
@@ -791,6 +791,29 @@ def health_check():
             'kea_connection': 'failed',
             'error': str(e)
         }), 503
+
+
+@app.route('/api/version', methods=['GET'])
+def api_version():
+    """Version endpoint
+    ---
+    tags:
+      - Health
+    summary: Get application version
+    description: Returns the running application version from version.txt. Unauthenticated, like /api/health, so fleet version audits are a single curl.
+    responses:
+      200:
+        description: Version retrieved
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            version:
+              type: string
+              example: "2.6.0"
+    """
+    return jsonify({'success': True, 'version': get_version()})
 
 
 @app.route('/api/leases', methods=['GET'])
