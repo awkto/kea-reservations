@@ -2527,6 +2527,25 @@
                 subnetHtml += `
                         </div>
                         <button type="button" class="btn btn-outline-secondary btn-sm mt-1" onclick="addPoolRow(${subnet.id})" title="Add pool range"><i class="bi bi-plus-circle me-1"></i>Add Pool</button>
+                        <div class="form-text">Dynamic DHCP pool, managed by Kea.</div>
+                    </dd>
+                `;
+
+                // Reservation Pool (read-only — wrapper-owned, not stored in Kea)
+                const resPoolValue = subnet.reservation_pool
+                    ? `<code>${subnet.reservation_pool}</code>`
+                    : '<span class="text-muted">Not configured</span>';
+                subnetHtml += `
+                    <dt class="col-sm-4">
+                        Reservation Pool
+                        <i class="bi bi-lock-fill text-muted ms-1" title="Read-only"></i>
+                    </dt>
+                    <dd class="col-sm-8">
+                        ${resPoolValue}
+                        <div class="form-text">
+                            Range the wrapper allocates static IPs from when promoting a lease.
+                            Stored in app config, not Kea. Edit in <code>config.yaml</code> (<code>kea.reservation_pools</code>).
+                        </div>
                     </dd>
                 `;
 

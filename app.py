@@ -2003,6 +2003,7 @@ def get_kea_config():
             }
 
             # Subnet settings
+            app_cfg = load_config()
             subnets = dhcp4_config.get('subnet4', [])
             for subnet in subnets:
                 pools = []
@@ -2028,7 +2029,12 @@ def get_kea_config():
                     'valid_lifetime': subnet_lifetime,
                     'valid_lifetime_formatted': format_time(subnet_lifetime) if subnet_lifetime else None,
                     'reservation_count': len(subnet.get('reservations', [])),
-                    'options': options
+                    'options': options,
+                    # Read-only: the wrapper-owned reservation pool for this subnet.
+                    # Stored in app config (kea.reservation_pools), NOT in Kea itself.
+                    # None when no pool is configured. Editing is not yet supported;
+                    # see enhancement issue for the write path and its edge cases.
+                    'reservation_pool': _get_reservation_pool(subnet.get('id'), app_cfg)
                 })
 
             # Advanced settings
