@@ -1130,17 +1130,33 @@ def create_reservation():
 
                     if existing_by_ip:
                         existing_mac = existing_by_ip.get('hw-address', '').lower()
+                        existing_hostname = existing_by_ip.get('hostname', '') or ''
 
                         if existing_mac == hw_address_lower:
-                            # Same MAC already has this IP — idempotent, return success
-                            logger.info(f"Reservation already exists for IP={ip_address}, MAC={hw_address} — no changes needed")
-                            return jsonify({
-                                'success': True,
-                                'message': f'Reservation already exists for {ip_address} with this MAC',
-                                'reservation': existing_by_ip
-                            }), 200
+                            # Same IP + same MAC. This is a true no-op only when the
+                            # hostname (and any DNS options) are unchanged. If the
+                            # hostname differs, fall through to apply the update by
+                            # deleting and re-adding — reservation-add cannot mutate
+                            # an existing entry, so without this a hostname-only edit
+                            # would silently do nothing.
+                            if (hostname or '') == existing_hostname and not dns_servers:
+                                logger.info(f"Reservation already exists for IP={ip_address}, MAC={hw_address} — no changes needed")
+                                return jsonify({
+                                    'success': True,
+                                    'message': f'Reservation already exists for {ip_address} with this MAC',
+                                    'reservation': existing_by_ip
+                                }), 200
 
-                        if not force:
+                            logger.info(
+                                f"Updating reservation IP={ip_address}, MAC={hw_address}: "
+                                f"hostname {existing_hostname!r} -> {(hostname or '')!r}"
+                            )
+                            try:
+                                client.delete_reservation(ip_address, subnet_id=subnet_id)
+                            except Exception as e:
+                                logger.warning(f"Pre-update delete failed for {ip_address}: {e}")
+
+                        elif not force:
                             # Different MAC — conflict
                             logger.warning(
                                 f"Conflict: IP {ip_address} already reserved for MAC {existing_mac}, "
@@ -1156,11 +1172,12 @@ def create_reservation():
                                 'existing_reservation': existing_by_ip
                             }), 409
 
-                        # force=true — log and proceed to overwrite
-                        logger.info(
-                            f"Force overwriting reservation for IP {ip_address}: "
-                            f"old MAC={existing_mac}, new MAC={hw_address_lower}"
-                        )
+                        else:
+                            # force=true — log and proceed to overwrite
+                            logger.info(
+                                f"Force overwriting reservation for IP {ip_address}: "
+                                f"old MAC={existing_mac}, new MAC={hw_address_lower}"
+                            )
 
                     # Check for MAC conflict (same MAC, different IP)
                     existing_by_mac = next(
