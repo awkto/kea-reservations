@@ -402,6 +402,37 @@ class KeaClient:
             logger.error(f"Unexpected error in create_reservation: {type(e).__name__}: {e}")
             raise
     
+    def _apply_config(self, dhcp4_config: Dict, persist: bool = True) -> bool:
+        """
+        Validate, apply, and (by default) persist a full Dhcp4 configuration.
+
+        config-set only updates the *running* server. Without a following
+        config-write the change is lost on the next Kea restart, silently —
+        nothing logs it and the GUI still shows the new value, because it
+        reads back the running config. Persisting by default keeps the
+        on-disk and running configs in step.
+
+        Args:
+            dhcp4_config: Full Dhcp4 configuration object to apply
+            persist: If False, apply to the running server only
+
+        Returns:
+            True if the configuration was written to disk
+        """
+        arguments = {"Dhcp4": dhcp4_config}
+
+        # Validate before applying so a malformed config can't take DHCP down.
+        self._send_command("config-test", ["dhcp4"], arguments)
+        self._send_command("config-set", ["dhcp4"], arguments)
+
+        if not persist:
+            logger.warning("Config applied to running server only; it will not "
+                           "survive a Kea restart")
+            return False
+
+        self._send_command("config-write", ["dhcp4"])
+        return True
+
     def _create_reservation_via_config(self, ip_address: str, hw_address: str,
                                        hostname: str = "", subnet_id: Optional[int] = None,
                                        option_data: Optional[List[Dict]] = None) -> Dict:
@@ -463,13 +494,10 @@ class KeaClient:
 
         target_subnet['reservations'].append(new_reservation)
 
-        # Apply the updated configuration
-        set_arguments = {
-            "Dhcp4": dhcp4_config
-        }
-
-        self._send_command("config-set", ["dhcp4"], set_arguments)
-        logger.info(f"Created reservation via config-set: IP={ip_address}, MAC={hw_address}")
+        # Apply and persist the updated configuration
+        persisted = self._apply_config(dhcp4_config)
+        logger.info(f"Created reservation via config-set: IP={ip_address}, "
+                    f"MAC={hw_address}, persisted={persisted}")
 
         return new_reservation
     
@@ -593,13 +621,10 @@ class KeaClient:
         if not reservation_found:
             raise Exception(f"Reservation for IP {ip_address} not found")
         
-        # Apply the updated configuration
-        set_arguments = {
-            "Dhcp4": dhcp4_config
-        }
-        
-        self._send_command("config-set", ["dhcp4"], set_arguments)
-        logger.info(f"Deleted reservation via config-set: IP={ip_address}")
+        # Apply and persist the updated configuration
+        persisted = self._apply_config(dhcp4_config)
+        logger.info(f"Deleted reservation via config-set: IP={ip_address}, "
+                    f"persisted={persisted}")
     
     def get_config(self) -> Dict:
         """
@@ -673,16 +698,17 @@ class KeaClient:
 
             target_subnet['option-data'] = option_data
 
-        # Apply the updated configuration
-        set_arguments = {"Dhcp4": dhcp4_config}
-        self._send_command("config-set", ["dhcp4"], set_arguments)
-        logger.info(f"Updated subnet {subnet_id}: pools={pools}, dns={dns_servers}, routers={routers}")
+        # Apply and persist the updated configuration
+        persisted = self._apply_config(dhcp4_config)
+        logger.info(f"Updated subnet {subnet_id}: pools={pools}, dns={dns_servers}, "
+                    f"routers={routers}, persisted={persisted}")
 
         return {
             'id': subnet_id,
             'subnet': target_subnet.get('subnet'),
             'pools': [p.get('pool', '') if isinstance(p, dict) else str(p)
                       for p in target_subnet.get('pools', [])],
+            'persisted': persisted,
         }
 
     def get_match_client_id(self) -> Dict:
@@ -737,13 +763,7 @@ class KeaClient:
         dhcp4 = result.get('arguments', {}).get('Dhcp4', {})
         dhcp4['match-client-id'] = bool(enabled)
 
-        # Validate before applying so a bad config doesn't take down the server.
-        self._send_command("config-test", ["dhcp4"], {"Dhcp4": dhcp4})
-        self._send_command("config-set", ["dhcp4"], {"Dhcp4": dhcp4})
-        persisted = False
-        if persist:
-            self._send_command("config-write", ["dhcp4"])
-            persisted = True
+        persisted = self._apply_config(dhcp4, persist=persist)
         logger.info(f"Set global match-client-id={enabled}, persisted={persisted}")
         return {'global': bool(enabled), 'persisted': persisted}
 
